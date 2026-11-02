@@ -1,0 +1,17 @@
+{
+  "name": "控图 · 自动控制原理学习工作台",
+  "short_name": "控图",
+  "description": "自动控制原理学习工作台：时域响应、频域特性、根轨迹与稳定性判据，离线可用。",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f6f3",
+  "theme_color": "#f5f6f3",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
