@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f3">
+  <title>控图 · 自动控制原理学习工作台</title>
+    <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#home" aria-label="控图首页">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span><strong>控图</strong><small>CONTROL STUDY LAB</small></span>
+      </a>
+
+      <div class="nav-caption">分析工具</div>
+      <nav class="primary-nav">
+        <button class="nav-item active" type="button" data-view="time" aria-current="page">
+          <span class="nav-icon">↗</span><span>时域响应</span><kbd>01</kbd>
+        </button>
+        <button class="nav-item" type="button" data-view="frequency">
+          <span class="nav-icon">∿</span><span>频域特性</span><kbd>02</kbd>
+        </button>
+        <button class="nav-item" type="button" data-view="root">
+          <span class="nav-icon">⊹</span><span>根轨迹</span><kbd>03</kbd>
+        </button>
+        <button class="nav-item" type="button" data-view="stability">
+          <span class="nav-icon">⌁</span><span>稳定性判据</span><kbd>04</kbd>
+        </button>
+      </nav>
+
+      <div class="sidebar-note">
+        <span class="note-line"></span>
+        <p>输入传递函数，<br>让系统特性一目了然。</p>
+        <span class="note-sub">本地计算 · 无需上传</span>
+      </div>
+      <div class="sidebar-footer"><span class="online-dot"></span>学习工作台 <span class="version">V 1.0</span></div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>工作台</span><span class="crumb-slash">/</span><strong id="breadcrumb-current">时域响应</strong></div>
+        <div class="topbar-right"><span class="local-badge"><span class="online-dot"></span>离线可用</span><span class="topbar-divider"></span><span class="topbar-label">自动控制原理</span></div>
+      </header>
+
+      <div class="page-content">
+        <section class="page-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-line"></span>CONTROL SYSTEM ANALYSIS</div>
+            <h1 id="page-title">时域响应<span class="title-period">.</span></h1>
+            <p id="page-description">用单位阶跃响应检验系统的动态性能指标。</p>
+          </div>
+          <label class="example-picker">
+            <span>快速示例</span>
+            <select id="example-select" aria-label="选择传递函数示例">
+              <option value="second">二阶欠阻尼</option>
+              <option value="first">一阶惯性环节</option>
+              <option value="integrator">带积分环节</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="model-strip" aria-label="当前系统模型">
+          <div class="model-strip-label"><span class="model-indicator"></span>当前系统模型</div>
+          <div class="transfer-function" aria-live="polite">
+            <span class="tf-prefix">G(s) =</span>
+            <span class="fraction"><span id="numerator-display">25</span><span class="fraction-rule"></span><span id="denominator-display">s² + 6s + 25</span></span>
+          </div>
+          <div id="model-summary" class="model-summary"></div>
+          <span class="model-strip-tail">连续系统 <span>·</span> 单位负反馈外开环</span>
+        </section>
+
+        <section id="parameter-panel" class="parameter-panel" aria-label="参数与指标总览">
+          <div class="parameter-panel-heading"><div><span class="section-index">QUICK CHECK / PARAMETERS</span><h2>参数与指标总览</h2></div><span id="parameter-context" class="parameter-context">等待分析</span></div>
+          <div id="parameter-grid" class="parameter-grid" aria-live="polite"></div>
+        </section>
+
+        <div class="workspace-grid">
+          <aside class="control-panel" aria-label="系统参数">
+            <div class="panel-heading"><div><span class="section-index">01 / MODEL</span><h2>系统模型</h2></div><span class="edit-mark" aria-hidden="true">⌁</span></div>
+            <p class="panel-help">可以直接输入环节公式，也可以输入展开后的系数。</p>
+
+            <label class="field-label" for="model-input-mode">输入方式 <span>INPUT MODE</span></label>
+            <select class="select-input" id="model-input-mode">
+              <option value="formula">传递函数公式</option>
+              <option value="coefficients">多项式系数</option>
+              <option value="response">输入 / 输出采样</option>
+            </select>
+
+            <div id="formula-fields" class="model-fields">
+              <label class="field-label spaced-label" for="formula-input">传递函数 G(s) <span>FORMULA</span></label>
+              <textarea id="formula-input" class="formula-input" rows="3" spellcheck="false">25 / (s² + 6s + 25)</textarea>
+              <p class="input-hint">支持 <code>s</code>、<code>^</code>、括号和隐式乘法，例如 <code>10 / ((0.5s+1)(0.2s+1))</code>。</p>
+            </div>
+
+            <div id="coefficient-fields" class="model-fields" hidden>
+              <label class="field-label spaced-label" for="numerator-input">分子系数 <span>NUMERATOR</span></label>
+              <div class="input-wrap"><span class="input-prefix">N(s)</span><input id="numerator-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="25" aria-describedby="coefficient-help"></div>
+              <label class="field-label" for="denominator-input">分母系数 <span>DENOMINATOR</span></label>
+              <div class="input-wrap"><span class="input-prefix">D(s)</span><input id="denominator-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="1, 6, 25"></div>
+              <p id="coefficient-help" class="input-hint">例如：s² + 6s + 25 输入为 <code>1, 6, 25</code></p>
+            </div>
+
+            <div id="response-fields" class="model-fields" hidden>
+              <label class="field-label spaced-label" for="response-time-input">时间采样 t <span>TIME</span></label>
+              <textarea id="response-time-input" class="formula-input compact-textarea" rows="2" spellcheck="false">0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4</textarea>
+              <label class="field-label spaced-label" for="input-signal-input">输入函数 u(t) <span>INPUT</span></label>
+              <textarea id="input-signal-input" class="formula-input compact-textarea" rows="2" spellcheck="false">0, 0, 1, 1, 1, 1, 1, 1, 1</textarea>
+              <label class="field-label spaced-label" for="output-response-input">输出响应 y(t) <span>OUTPUT</span></label>
+              <textarea id="output-response-input" class="formula-input compact-textarea" rows="2" spellcheck="false">0, 0.05, 0.28, 0.62, 0.91, 1.08, 1.11, 1.05, 1.01</textarea>
+              <p class="input-hint">三组数据用逗号或空格分隔，长度必须一致。该模式用于题目数据的输入/输出校对。</p>
+            </div>
+
+            <div class="panel-divider"></div>
+            <label class="check-row global-check"><input id="asymptote-toggle" type="checkbox" checked><span>显示渐近线 / 参考线</span></label>
+            <div id="time-options" class="tool-options">
+              <label class="field-label" for="duration-input">仿真时长 <span>SECONDS</span></label>
+              <div class="input-wrap"><span class="input-prefix">T</span><input id="duration-input" type="number" min="0.1" max="1000" step="0.5" value="8"><span class="input-unit">s</span></div>
+            </div>
+            <div id="frequency-options" class="tool-options" hidden>
+              <label class="field-label" for="frequency-mode">频域图形 <span>VIEW</span></label>
+              <select class="select-input" id="frequency-mode"><option value="bode">Bode 图（幅频 / 相频）</option><option value="nyquist">Nyquist 图</option></select>
+              <label class="field-label spaced-label" for="frequency-range">频率范围 <span>RAD/S</span></label>
+              <select class="select-input" id="frequency-range"><option value="2">0.01 – 100 rad/s</option><option value="3">0.001 – 1000 rad/s</option><option value="1">0.1 – 10 rad/s</option></select>
+              <label class="field-label spaced-label" for="bode-query-mode">参数查询 <span>QUERY</span></label>
+              <select class="select-input" id="bode-query-mode"><option value="phase-at-frequency">输入频率，查相位</option><option value="frequency-at-phase">输入相位，查频率</option></select>
+              <div class="input-wrap"><span id="bode-query-prefix" class="input-prefix">ω</span><input id="bode-query-value" type="number" step="any" value="1"><span id="bode-query-unit" class="input-unit">rad/s</span></div>
+              <p id="bode-query-result" class="query-result" aria-live="polite">—</p>
+            </div>
+            <div id="root-options" class="tool-options" hidden>
+              <label class="field-label" for="gain-max">增益范围 <span>GAIN K</span></label>
+              <div class="input-wrap"><span class="input-prefix">K max</span><input id="gain-max" type="number" min="1" max="10000" step="10" value="100"></div>
+              <p class="input-hint">闭环特征方程：D(s) + K·N(s) = 0</p>
+            </div>
+            <div id="stability-options" class="tool-options" hidden>
+              <label class="field-label" for="stability-gain">反馈增益 K <span>UNITY FEEDBACK</span></label>
+              <div class="input-wrap"><span class="input-prefix">K</span><input id="stability-gain" type="number" min="0.001" max="10000" step="0.1" value="1"></div>
+              <p class="input-hint">判别闭环特征方程 1 + K·G(s) = 0；Nyquist 临界点为 −1/K。</p>
+            </div>
+
+            <div id="error-message" class="error-message" role="alert" hidden></div>
+            <button id="calculate-button" class="calculate-button" type="button"><span>更新分析结果</span><span aria-hidden="true">↗</span></button>
+            <p class="panel-footnote"><span aria-hidden="true">i</span> 高阶系统支持系数输入；仅适用于真有理传递函数。</p>
+          </aside>
+
+          <section class="results-area" aria-live="polite">
+            <div class="results-toolbar">
+              <div class="results-tabs" role="tablist" aria-label="分析工具">
+                <button class="result-tab active" type="button" role="tab" aria-selected="true" data-view="time">时域响应</button>
+                <button class="result-tab" type="button" role="tab" aria-selected="false" data-view="frequency">频域特性</button>
+              <button class="result-tab" type="button" role="tab" aria-selected="false" data-view="root">根轨迹</button>
+              <button class="result-tab" type="button" role="tab" aria-selected="false" data-view="stability">稳定性</button>
+              </div>
+              <span class="calculation-state"><span class="state-dot"></span><span id="state-text">分析完成</span></span>
+            </div>
+
+            <div id="time-panel" class="result-panel">
+              <div class="chart-heading"><div><span class="chart-kicker">STEP RESPONSE</span><h2>单位阶跃响应</h2></div><span class="chart-unit">y(t)</span></div>
+              <div id="step-chart" class="chart-container"><svg role="img" aria-label="单位阶跃响应曲线"></svg></div>
+              <div class="metrics-heading"><span>动态性能指标</span><span class="metric-band">2% 调节标准</span></div>
+              <div class="metrics-grid" id="metrics-grid" aria-live="polite"></div>
+              <p class="result-note" id="time-note">指标以最终值为基准自动计算。</p>
+            </div>
+
+            <div id="frequency-panel" class="result-panel" hidden>
+              <div class="chart-heading"><div><span class="chart-kicker" id="frequency-kicker">FREQUENCY RESPONSE</span><h2 id="frequency-title">Bode 图</h2></div><span class="chart-unit">G(jω)</span></div>
+              <div id="bode-chart" class="chart-container"><svg role="img" aria-label="Bode 幅频特性图"></svg></div>
+              <div id="phase-chart" class="chart-container phase-container"><svg role="img" aria-label="Bode 相频特性图"></svg></div>
+              <div id="nyquist-chart" class="chart-container" hidden><svg role="img" aria-label="Nyquist 极坐标图"></svg></div>
+              <div id="bode-analysis" class="analysis-block"></div>
+              <p class="result-note" id="frequency-note">频率 ω 单位为 rad/s，幅值以 dB 表示。</p>
+            </div>
+
+            <div id="root-panel" class="result-panel" hidden>
+              <div class="chart-heading"><div><span class="chart-kicker">CLOSED-LOOP POLES</span><h2>根轨迹</h2></div><span class="chart-unit">s 平面</span></div>
+              <div id="root-chart" class="chart-container"><svg role="img" aria-label="随增益变化的闭环极点根轨迹"></svg></div>
+              <div class="root-legend"><span><i class="legend-dot open-dot"></i>开环极点 K = 0</span><span><i class="legend-dot closed-dot"></i>闭环极点 K 增大方向</span><span><i class="legend-cross">×</i>开环零点</span></div>
+              <div id="root-analysis" class="analysis-block"></div>
+              <p class="result-note" id="root-note">根轨迹展示 D(s) + K·N(s) = 0 的闭环极点变化。</p>
+            </div>
+
+            <div id="stability-panel" class="result-panel" hidden>
+              <div class="chart-heading"><div><span class="chart-kicker">STABILITY CRITERIA</span><h2>劳斯判据与 Nyquist 判据</h2></div><span class="chart-unit">K = <span id="stability-gain-label">1</span></span></div>
+              <div id="stability-summary" class="stability-summary" aria-live="polite"></div>
+              <div class="stability-columns">
+                <section class="stability-section" aria-labelledby="routh-title">
+                  <h3 id="routh-title">劳斯表</h3>
+                  <div id="routh-table" class="routh-table"></div>
+                </section>
+                <section class="stability-section" aria-labelledby="nyquist-title">
+                  <h3 id="nyquist-title">Nyquist 图</h3>
+                  <div id="stability-nyquist-chart" class="chart-container stability-chart"><svg role="img" aria-label="Nyquist 曲线与临界点 -1/K"></svg></div>
+                  <div id="nyquist-summary" class="analysis-grid"></div>
+                </section>
+              </div>
+              <p id="stability-note" class="result-note">Nyquist 计数基于开环频率响应绕临界点的有向环绕数。</p>
+            </div>
+
+            <footer class="results-footer"><span>控图 <span class="footer-sep">/</span> 自动控制原理自查工具</span><span>结果供学习校验参考</span></footer>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="app.js" defer></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('./sw.js').catch(function () {});
+      });
+    }
+  </script>
+</body>
+</html>
