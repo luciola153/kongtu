@@ -251,6 +251,86 @@
   </div>
   <script src="app.js" defer></script>
   <script>
+/* 控图 · 触屏手势增强
+   本文件不会进入电脑版：由 生成发布包.py / 打包手机版.py 注入手机版使用。
+   - 双指张开 / 收合 = 缩放曲线（以两指中心为锚点，复用 app.js 的 wheel 缩放逻辑）
+   - 双轻点（double-tap）= 恢复初始视图（等效电脑版双击）
+   - 单指拖动 = 平移（沿用原有行为，不受影响）
+   - 电脑上没有触摸事件，这些监听器永远不会被触发，零影响
+*/
+(function () {
+
+  let pinch = null;              // { svg, lastDist, cx, cy }
+  const STEP = 1.12;             // 两指距离每累计变化 12% 触发一档缩放
+  const svgFrom = function (t) { return (t && t.closest && t.closest('svg')) || null; };
+  const distance = function (a, b) { return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); };
+  const midpoint = function (a, b) { return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 }; };
+
+  function zoomStep(svg, cx, cy, inward) {
+    // 复用 app.js 的 wheel 缩放：deltaY<0 放大，deltaY>0 缩小，锚点 = 事件坐标
+    svg.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true, cancelable: true, view: window,
+      clientX: cx, clientY: cy, deltaMode: 0, deltaY: inward ? -120 : 120
+    }));
+  }
+
+  // 双指按下：进入缩放模式；阻止浏览器默认的页面缩放；让图表结束可能的拖动状态
+  document.addEventListener('touchstart', function (e) {
+    if (e.touches.length < 2) return;
+    const svg = svgFrom(e.touches[0].target) || svgFrom(e.target);
+    if (!svg) return;
+    const a = e.touches[0], b = e.touches[1];
+    const m = midpoint(a, b);
+    pinch = { svg: svg, lastDist: distance(a, b), cx: m.x, cy: m.y };
+    svg.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }));
+    e.preventDefault();
+  }, { capture: true, passive: false });
+
+  // 双指移动：按距离变化换算成滚轮缩放
+  document.addEventListener('touchmove', function (e) {
+    if (!pinch || e.touches.length < 2) return;
+    const a = e.touches[0], b = e.touches[1];
+    const d = distance(a, b);
+    const m = midpoint(a, b);
+    pinch.cx = m.x; pinch.cy = m.y;
+    let guard = 12;
+    while (d / pinch.lastDist >= STEP && guard-- > 0) { zoomStep(pinch.svg, m.x, m.y, true); pinch.lastDist *= STEP; }
+    guard = 12;
+    while (pinch.lastDist / d >= STEP && guard-- > 0) { zoomStep(pinch.svg, m.x, m.y, false); pinch.lastDist /= STEP; }
+    e.preventDefault();
+  }, { capture: true, passive: false });
+
+  const maybeEnd = function (e) { if (pinch && e.touches.length < 2) pinch = null; };
+  document.addEventListener('touchend', maybeEnd, { capture: true, passive: false });
+  document.addEventListener('touchcancel', maybeEnd, { capture: true, passive: false });
+
+  // 缩放期间拦截 pointer 事件，避免图表把双指误当成拖动
+  const swallow = function (e) { if (pinch) e.stopPropagation(); };
+  ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'].forEach(function (type) {
+    document.addEventListener(type, swallow, { capture: true });
+  });
+
+  // 双轻点恢复初始视图
+  let lastTapTime = 0, lastTapX = 0, lastTapY = 0;
+  document.addEventListener('touchend', function (e) {
+    if (e.touches.length !== 0 || !e.changedTouches || !e.changedTouches.length) return;
+    const t = e.changedTouches[0];
+    const svg = svgFrom(t.target);
+    if (!svg) { lastTapTime = 0; return; }
+    const now = Date.now();
+    if (now - lastTapTime < 350 && Math.hypot(t.clientX - lastTapX, t.clientY - lastTapY) < 40) {
+      svg.dispatchEvent(new MouseEvent('dblclick', {
+        bubbles: true, cancelable: true, view: window, clientX: t.clientX, clientY: t.clientY
+      }));
+      lastTapTime = 0;
+    } else {
+      lastTapTime = now; lastTapX = t.clientX; lastTapY = t.clientY;
+    }
+  }, { capture: true, passive: false });
+})();
+
+  </script>
+  <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
         navigator.serviceWorker.register('./sw.js').catch(function () {});
