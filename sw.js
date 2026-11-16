@@ -1,5 +1,5 @@
 // 控图 PWA 离线缓存 —— 由 生成发布包.py 自动生成，请勿手改
-const CACHE = 'kongtu-202611161930';
+const CACHE = 'kongtu-202611162022';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './manifest.json',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'
