@@ -61,6 +61,7 @@
               <option value="second">二阶欠阻尼</option>
               <option value="first">一阶惯性环节</option>
               <option value="integrator">带积分环节</option>
+              <option value="notebook">笔记 Nyquist 例题</option>
             </select>
           </label>
         </section>
@@ -78,6 +79,12 @@
         <section id="parameter-panel" class="parameter-panel" aria-label="参数与指标总览">
           <div class="parameter-panel-heading"><div><span class="section-index">QUICK CHECK / PARAMETERS</span><h2>参数与指标总览</h2></div><span id="parameter-context" class="parameter-context">等待分析</span></div>
           <div id="parameter-grid" class="parameter-grid" aria-live="polite"></div>
+          <div id="cursor-readout" class="chart-readout" role="status">鼠标移到曲线上读取坐标；单击固定读数，双击恢复视图。</div>
+          <details id="parameter-details" class="parameter-details">
+            <summary>展开详细参数与绘图规则</summary>
+            <div id="bode-analysis" class="analysis-block" hidden></div>
+            <div id="root-analysis" class="analysis-block" hidden></div>
+          </details>
         </section>
 
         <div class="workspace-grid">
@@ -126,7 +133,27 @@
               <label class="field-label" for="frequency-mode">频域图形 <span>VIEW</span></label>
               <select class="select-input" id="frequency-mode"><option value="bode">Bode 图（幅频 / 相频）</option><option value="nyquist">Nyquist 图</option></select>
               <label class="field-label spaced-label" for="frequency-range">频率范围 <span>RAD/S</span></label>
-              <select class="select-input" id="frequency-range"><option value="2">0.01 – 100 rad/s</option><option value="3">0.001 – 1000 rad/s</option><option value="1">0.1 – 10 rad/s</option></select>
+              <select class="select-input" id="frequency-range"><option value="2">0.01 – 100 rad/s</option><option value="3">0.001 – 1000 rad/s</option><option value="1">0.1 – 10 rad/s</option><option value="custom">自定义频率范围</option></select>
+              <div class="scale-fields" id="frequency-custom" hidden>
+                <label>ω 最小值<input id="frequency-min" type="number" step="any" value="0.01"></label>
+                <label>ω 最大值<input id="frequency-max" type="number" step="any" value="100"></label>
+              </div>
+              <div id="bode-scale-settings">
+                <div class="scale-heading"><strong>幅值刻度 · dB</strong><button type="button" class="auto-button" data-auto="magnitude">Auto</button></div>
+                <select id="magnitude-scale-mode" class="select-input" aria-label="幅值刻度模式"><option value="auto">Auto 自动刻度</option><option value="fixed">固定刻度</option></select>
+                <div class="scale-fields" id="magnitude-scale-fields" hidden>
+                  <label>最小值<input id="magnitude-min" type="number" step="any" value="-80"></label>
+                  <label>最大值<input id="magnitude-max" type="number" step="any" value="40"></label>
+                  <label>每格 dB<input id="magnitude-step" type="number" step="any" value="20"></label>
+                </div>
+                <div class="scale-heading"><strong>相位刻度 · °</strong><button type="button" class="auto-button" data-auto="phase">Auto</button></div>
+                <select id="phase-scale-mode" class="select-input" aria-label="相位刻度模式"><option value="auto">Auto 自动刻度</option><option value="fixed">固定刻度</option></select>
+                <div class="scale-fields" id="phase-scale-fields" hidden>
+                  <label>最小值<input id="phase-min" type="number" step="any" value="-360"></label>
+                  <label>最大值<input id="phase-max" type="number" step="any" value="0"></label>
+                  <label>每格 °<input id="phase-step" type="number" step="any" value="45"></label>
+                </div>
+              </div>
               <label class="field-label spaced-label" for="bode-query-mode">参数查询 <span>QUERY</span></label>
               <select class="select-input" id="bode-query-mode"><option value="phase-at-frequency">输入频率，查相位</option><option value="frequency-at-phase">输入相位，查频率</option></select>
               <div class="input-wrap"><span id="bode-query-prefix" class="input-prefix">ω</span><input id="bode-query-value" type="number" step="any" value="1"><span id="bode-query-unit" class="input-unit">rad/s</span></div>
@@ -134,14 +161,31 @@
             </div>
             <div id="root-options" class="tool-options" hidden>
               <label class="field-label" for="gain-max">增益范围 <span>GAIN K</span></label>
-              <div class="input-wrap"><span class="input-prefix">K max</span><input id="gain-max" type="number" min="1" max="10000" step="10" value="100"></div>
+              <div class="input-wrap"><span class="input-prefix">K max</span><input id="gain-max" type="number" min="0" max="1e30" step="any" value="100"></div>
               <p class="input-hint">闭环特征方程：D(s) + K·N(s) = 0</p>
+              <button class="auto-button root-auto" type="button" id="root-auto">Auto 恢复根轨迹</button>
             </div>
             <div id="stability-options" class="tool-options" hidden>
               <label class="field-label" for="stability-gain">反馈增益 K <span>UNITY FEEDBACK</span></label>
               <div class="input-wrap"><span class="input-prefix">K</span><input id="stability-gain" type="number" min="0.001" max="10000" step="0.1" value="1"></div>
-              <p class="input-hint">判别闭环特征方程 1 + K·G(s) = 0；Nyquist 临界点为 −1/K。</p>
+              <p class="input-hint">判别 1 + K·G(s) = 0；绘制 L(s)=K·G(s)，临界点固定为 (−1,0)。</p>
             </div>
+            <div id="nyquist-scale-settings" class="tool-options" hidden>
+              <div class="scale-heading"><strong>Nyquist 坐标刻度</strong><button type="button" class="auto-button" data-auto="nyquist">Auto</button></div>
+              <select id="nyquist-scale-mode" class="select-input" aria-label="Nyquist 刻度模式"><option value="auto">Auto 观察有限部分</option><option value="fixed">固定刻度</option></select>
+              <div id="nyquist-scale-fields" class="scale-fields" hidden>
+                <label>实轴最小值<input id="nyquist-x-min" type="number" step="any" value="-4"></label>
+                <label>实轴最大值<input id="nyquist-x-max" type="number" step="any" value="4"></label>
+                <label>实轴每格<input id="nyquist-x-step" type="number" step="any" value="1"></label>
+                <label>虚轴最小值<input id="nyquist-y-min" type="number" step="any" value="-4"></label>
+                <label>虚轴最大值<input id="nyquist-y-max" type="number" step="any" value="4"></label>
+                <label>虚轴每格<input id="nyquist-y-step" type="number" step="any" value="1"></label>
+              </div>
+              <label class="check-row"><input type="checkbox" id="nyquist-negative"><span>显示负频率支路</span></label>
+              <label class="check-row"><input type="checkbox" id="nyquist-detours" checked><span>显示虚轴极点绕行映射</span></label>
+              <p class="scale-help">实虚轴等比例；Auto 保留有限曲线细节，远端可能超出视野。</p>
+            </div>
+            <p class="scale-help" id="complex-plot-help" hidden>模值 &gt; 10000 的远端用虚线。滚轮缩放坐标，拖动平移；双击恢复设置。</p>
 
             <div id="error-message" class="error-message" role="alert" hidden></div>
             <button id="calculate-button" class="calculate-button" type="button"><span>更新分析结果</span><span aria-hidden="true">↗</span></button>
@@ -172,15 +216,13 @@
               <div id="bode-chart" class="chart-container"><svg role="img" aria-label="Bode 幅频特性图"></svg></div>
               <div id="phase-chart" class="chart-container phase-container"><svg role="img" aria-label="Bode 相频特性图"></svg></div>
               <div id="nyquist-chart" class="chart-container" hidden><svg role="img" aria-label="Nyquist 极坐标图"></svg></div>
-              <div id="bode-analysis" class="analysis-block"></div>
               <p class="result-note" id="frequency-note">频率 ω 单位为 rad/s，幅值以 dB 表示。</p>
             </div>
 
             <div id="root-panel" class="result-panel" hidden>
               <div class="chart-heading"><div><span class="chart-kicker">CLOSED-LOOP POLES</span><h2>根轨迹</h2></div><span class="chart-unit">s 平面</span></div>
               <div id="root-chart" class="chart-container"><svg role="img" aria-label="随增益变化的闭环极点根轨迹"></svg></div>
-              <div class="root-legend"><span><i class="legend-dot open-dot"></i>开环极点 K = 0</span><span><i class="legend-dot closed-dot"></i>闭环极点 K 增大方向</span><span><i class="legend-cross">×</i>开环零点</span></div>
-              <div id="root-analysis" class="analysis-block"></div>
+              <div class="root-legend"><span><i class="legend-cross">×</i>开环极点</span><span><i class="legend-dot open-dot"></i>开环零点</span><span class="legend-root">→ K 增大</span><span>灰虚线：渐近线</span><span>红虚线：模值 &gt; 10000</span></div>
               <p class="result-note" id="root-note">根轨迹展示 D(s) + K·N(s) = 0 的闭环极点变化。</p>
             </div>
 
@@ -194,7 +236,7 @@
                 </section>
                 <section class="stability-section" aria-labelledby="nyquist-title">
                   <h3 id="nyquist-title">Nyquist 图</h3>
-                  <div id="stability-nyquist-chart" class="chart-container stability-chart"><svg role="img" aria-label="Nyquist 曲线与临界点 -1/K"></svg></div>
+                  <div id="stability-nyquist-chart" class="chart-container stability-chart"><svg role="img" aria-label="Nyquist 曲线与临界点 (-1,0)"></svg></div>
                   <div id="nyquist-summary" class="analysis-grid"></div>
                 </section>
               </div>
