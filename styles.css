@@ -14,3 +14,52 @@
 @media(max-width:1100px){.parameter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.stability-columns{grid-template-columns:minmax(220px,1fr) minmax(260px,1.15fr)}}
 @media(max-width:820px){.stability-columns{grid-template-columns:1fr}}
 @media(max-width:520px){.parameter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stability-chart{height:225px}.chart-readout{font-size:8px;white-space:normal}}
+
+/* Coordinate controls and exact-scale plots */
+[hidden]{display:none!important}
+.scale-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:15px 0 7px;font-size:11px;color:#476052}
+.auto-button{border:1px solid #8bb5a0;border-radius:5px;background:#edf6ef;color:#276850;padding:6px 10px;font:600 11px "Segoe UI","Microsoft YaHei",sans-serif;cursor:pointer}
+.auto-button:hover{background:#dceee1}.root-auto{margin-top:14px}
+.scale-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.scale-fields label{display:grid;gap:4px;font-size:10px;color:#61766a}
+.scale-fields input{width:100%;min-width:0;height:32px;border:1px solid #d1dfd3;border-radius:4px;padding:5px 7px;font:12px Consolas,monospace;background:#fff;color:#334c3d}
+.scale-help{font-size:10px;line-height:1.7;color:#61776a;margin:10px 0}
+.parameter-details{margin-top:10px;border-top:1px solid #e2e9e0;padding-top:10px}
+.parameter-details summary{cursor:pointer;font-size:12px;color:#41644f}
+.parameter-details .analysis-block{padding:10px 0;border:0}
+.parameter-details .analysis-grid{font-size:11px;grid-template-columns:145px minmax(0,1fr);line-height:1.7}
+.parameter-item-value{white-space:normal;overflow:visible;overflow-wrap:anywhere;font-size:14px;line-height:1.5}
+#cursor-readout{margin:12px 0 0;padding:10px 12px;border-radius:5px;font-size:11px;line-height:1.8;min-height:40px;overflow-wrap:anywhere}
+.chart-container{height:340px}
+.phase-container{height:270px}
+#root-chart{height:420px}
+#nyquist-chart{height:460px}
+.stability-chart{height:400px}
+.chart-container svg{overflow:hidden;cursor:crosshair;touch-action:pan-y;user-select:none}
+.plot-frame{fill:none;stroke:#b6c6b9;stroke-width:1}
+.chart-tick{font-size:11px;fill:#617367}
+.chart-axis-title{font-size:11px;fill:#435e4d}
+.chart-grid{stroke:#e2eae2;stroke-width:1}
+.axis-zero{stroke:#71877a;stroke-width:1.3}
+.root-track{fill:none;stroke:#cc3c45;stroke-width:2;opacity:1}
+.pole-symbol{stroke:#cc3c45;stroke-width:2.2;fill:none}
+.zero-symbol{fill:#fbfcf9;stroke:#28564a;stroke-width:2}
+.nyquist-positive{fill:none;stroke:#16816d;stroke-width:2}
+.nyquist-negative{fill:none;stroke:#467fc0;stroke-width:1.8}
+.nyquist-detour{fill:none;stroke:#9274ac;stroke-width:1.5;stroke-dasharray:5 5}
+.plot-asymptote{fill:none;stroke:#8d99a0;stroke-width:1.2;stroke-dasharray:6 5}
+.far-tail{stroke-dasharray:7 5}
+.critical-point{fill:#dc3843;stroke:#fff;stroke-width:1.5}
+.dc-point{fill:#307ca4;stroke:#fff;stroke-width:1.5}
+.direction-arrow{fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.root-legend{flex-wrap:wrap;row-gap:8px;line-height:1.5;font-size:10px}
+.root-legend .legend-cross,.legend-root{color:#cc3c45}
+.root-legend .open-dot{border-color:#28564a}
+.stability-columns{grid-template-columns:1fr}
+.stability-section{min-width:0}
+.stability-status{flex-wrap:wrap;line-height:1.7}
+#nyquist-summary{font-size:11px;line-height:1.7;grid-template-columns:150px minmax(0,1fr)}
+@media(max-width:820px){.control-panel{display:block}.model-strip{height:auto;min-height:72px;flex-wrap:wrap;padding:12px}.model-strip-tail{white-space:normal}.scale-fields{grid-template-columns:repeat(3,minmax(0,1fr))}.model-fields{margin-bottom:12px}}
+@media(max-width:520px){.sidebar{flex-wrap:wrap}.primary-nav{width:100%;justify-content:space-between}.brand{margin:auto}.parameter-panel-heading{gap:8px;align-items:start}.parameter-context{text-align:right}.parameter-item-value{font-size:12px}.chart-container{height:300px}.phase-container{height:260px}#root-chart,#nyquist-chart,.stability-chart{height:340px}.parameter-details .analysis-grid,#nyquist-summary{grid-template-columns:100px minmax(0,1fr);font-size:10px}.results-toolbar{gap:5px}.results-tabs{gap:10px}.stability-columns{padding:10px}.stability-summary{padding:12px}.transfer-function{max-width:100%;overflow-x:auto}#cursor-readout{font-size:10px}}
+
+
