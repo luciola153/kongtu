@@ -134,9 +134,10 @@ function addComplex(a, b) { return { re: a.re + b.re, im: a.im + b.im }; }
 function subComplex(a, b) { return { re: a.re - b.re, im: a.im - b.im }; }
 function mulComplex(a, b) { return { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re }; }
 function divComplex(a, b) {
-  const d = b.re * b.re + b.im * b.im;
-  if (d < COMPLEX_EPSILON) return { re: 1e12, im: 1e12 };
-  return { re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d };
+  const scale = Math.max(Math.abs(b.re), Math.abs(b.im));
+  if (scale === 0) return { re: NaN, im: NaN };
+  const re = b.re / scale; const im = b.im / scale; const d = re * re + im * im;
+  return { re: ((a.re / scale) * re + (a.im / scale) * im) / d, im: ((a.im / scale) * re - (a.re / scale) * im) / d };
 }
 function absComplex(a) { return Math.hypot(a.re, a.im); }
 function evalPolynomial(coefficients, z) {
@@ -146,11 +147,19 @@ function evalPolynomial(coefficients, z) {
 }
 
 function polynomialRoots(coefficients) {
+  coefficients = trimPolynomial(coefficients);
+  const originRoots = [];
+  while (coefficients.length > 1 && coefficients.at(-1) === 0) {
+    originRoots.push({ re: 0, im: 0 });
+    coefficients = coefficients.slice(0, -1);
+  }
   const degree = coefficients.length - 1;
-  if (degree <= 0) return [];
+  if (degree <= 0) return originRoots;
   const normalized = coefficients.map((value) => value / coefficients[0]);
-  if (degree === 1) return [{ re: -normalized[1], im: 0 }];
-  const radius = 1 + Math.max(...normalized.slice(1).map(Math.abs));
+  if (degree === 1) return originRoots.concat([{ re: -normalized[1], im: 0 }]);
+  const rootScale = Math.max(1e-12, ...normalized.slice(1).map((value, i) => Math.pow(Math.abs(value), 1 / (i + 1))));
+  const scaled = normalized.map((value, i) => value / Math.pow(rootScale, i));
+  const radius = 1 + Math.max(...scaled.slice(1).map(Math.abs));
   let roots = Array.from({ length: degree }, (_, i) => {
     const angle = (2 * Math.PI * (i + 0.173) / degree) + 0.13;
     return { re: radius * Math.cos(angle), im: radius * Math.sin(angle) };
@@ -165,15 +174,18 @@ function polynomialRoots(coefficients) {
         if (absComplex(difference) < COMPLEX_EPSILON) difference = addComplex(difference, { re: 1e-7 * (i + 1), im: 1e-7 * (j + 1) });
         divisor = mulComplex(divisor, difference);
       }
-      const shift = divComplex(evalPolynomial(normalized, root), divisor);
+      const shift = divComplex(evalPolynomial(scaled, root), divisor);
       if (!Number.isFinite(shift.re) || !Number.isFinite(shift.im)) return root;
       maxShift = Math.max(maxShift, absComplex(shift));
       return subComplex(root, shift);
     });
     roots = next;
-    if (maxShift < 1e-9) break;
+    if (maxShift < 1e-12) break;
   }
-  return roots.map((root) => Math.abs(root.im) < 1e-9 ? { re: root.re, im: 0 } : root);
+  return originRoots.concat(roots.map((root) => {
+    const re = root.re * rootScale; const im = root.im * rootScale;
+    return { re: Math.abs(re) < 1e-10 ? 0 : re, im: Math.abs(im) < 1e-10 ? 0 : im };
+  }));
 }
 
 function validateModel(numerator, denominator) {
@@ -377,6 +389,7 @@ function evaluateQuery(data, mode, value) {
     if (value < data[0].omega || value > data.at(-1).omega) return "频率超出当前图的范围。";
     const phase = interpolateFrequencyField(data, value, "phase");
     const magnitude = interpolateFrequencyField(data, value, "magnitude");
+    if (!Number.isFinite(phase) || !Number.isFinite(magnitude)) return "该频率位于奇点或奇点邻域，频率响应未定义，不能跨越奇点插值。";
     return "ω = " + value.toPrecision(5) + " rad/s（f = " + (value / (2 * Math.PI)).toPrecision(5) + " Hz）时，相位约为 " + phase.toFixed(2) + "°，幅值 " + magnitude.toFixed(2) + " dB。";
   }
   const crossings = [];
@@ -398,12 +411,11 @@ function findBreakawayPoints(model, roots) {
     -1,
   );
   return polynomialRoots(q).filter((point) => Math.abs(point.im) < 1e-5).map((point) => point.re).filter((s) => {
-    if (Math.abs(s) < 1e-8) return false;
     const numerator = evalPolynomial(model.numerator, { re: s, im: 0 }).re;
     const denominator = evalPolynomial(model.denominator, { re: s, im: 0 }).re;
     const gain = Math.abs(numerator) < 1e-10 ? -Infinity : -denominator / numerator;
-    const polesToRight = roots.poles.filter((pole) => Math.abs(pole.im) < 1e-6 && pole.re > s).length;
-    return gain > 0 && polesToRight % 2 === 1;
+    const realPointsRight = [...roots.poles, ...roots.zeros].filter((point) => Math.abs(point.im) < 1e-6 && point.re > s).length;
+    return gain > 0 && (realPointsRight % 2 === 1) === (model.numerator[0] / model.denominator[0] > 0);
   }).sort((a, b) => a - b);
 }
 
@@ -442,6 +454,7 @@ function routhTable(coefficients) {
   });
   const epsilon = 1e-9;
   const specialRows = [];
+  const epsilonRows = [];
   for (let row = 2; row <= order; row += 1) {
     if (table[row - 1].every((value) => Math.abs(value) < epsilon)) {
       specialRows.push(row - 1);
@@ -452,7 +465,7 @@ function routhTable(coefficients) {
         table[row - 1][column] = power > 0 ? auxiliary[column] * power : 0;
       }
     }
-    if (Math.abs(table[row - 1][0]) < epsilon) table[row - 1][0] = epsilon;
+    if (Math.abs(table[row - 1][0]) < epsilon) { table[row - 1][0] = epsilon; epsilonRows.push(row - 1); }
     for (let column = 0; column < columns - 1; column += 1) {
       const numerator = table[row - 1][0] * table[row - 2][column + 1] - table[row - 2][0] * table[row - 1][column + 1];
       table[row][column] = numerator / table[row - 1][0];
@@ -462,7 +475,7 @@ function routhTable(coefficients) {
   const signs = firstColumn.map((value) => Math.sign(value));
   let signChanges = 0;
   for (let i = 1; i < signs.length; i += 1) if (signs[i] && signs[i - 1] && signs[i] !== signs[i - 1]) signChanges += 1;
-  return { table, order, firstColumn, signChanges, specialRows };
+  return { table, order, firstColumn, signChanges, specialRows, epsilonRows };
 }
 
 function closedLoopPolynomial(model, gain) {
@@ -472,275 +485,465 @@ function closedLoopPolynomial(model, gain) {
   return addPolynomial(denominator, scalePolynomial(numerator, gain));
 }
 
-function nyquistData(model, gain, samples) {
-  const count = samples || 400;
-  const characteristics = modelCharacteristics(model);
-  const imaginaryAxisPoles = characteristics.poles.filter((pole) => Math.abs(pole.re) < 1e-7);
-  const maxFrequency = Math.max(100, ...characteristics.poles.map(absComplex), ...characteristics.zeros.map(absComplex)) * 100;
-  const positive = Array.from({ length: count }, (_, index) => {
-    const omega = Math.pow(10, -5 + 10 * index / (count - 1)) * maxFrequency / 10;
-    const response = frequencyResponse(model.numerator, model.denominator, omega);
-    return { omega, x: gain * response.re, y: gain * response.im };
+const FAR_RADIUS = 10000;
+const finitePoint = (p) => p && Number.isFinite(p.x) && Number.isFinite(p.y);
+function niceStep(span, target = 6) {
+  const raw = Math.max(span / target, 1e-12), base = Math.pow(10, Math.floor(Math.log10(raw)));
+  return ([1, 2, 2.5, 5, 10].find((factor) => factor >= raw / base) || 10) * base;
+}
+function axisTicks(min, max, step = niceStep(max - min), aligned = false) {
+  if (!(Number.isFinite(min) && Number.isFinite(max) && Number.isFinite(step) && max > min && step > 0)) throw new Error("刻度需要：最大值 > 最小值，每格步长 > 0。");
+  if ((max - min) / step > 200) throw new Error("每个坐标轴最多 200 格，请增大刻度步长。");
+  const start = aligned ? Math.ceil(min / step - 1e-10) * step : min;
+  return Array.from({ length: Math.floor((max - start) / step + 1e-8) + 1 }, (_, i) => start + i * step);
+}
+function niceBounds(min, max, reference) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: -1, max: 1, step: 0.5 };
+  if (reference !== undefined) { min = Math.min(min, reference); max = Math.max(max, reference); }
+  const pad = Math.max(max - min, 1) * 0.08, step = niceStep(max - min + 2 * pad);
+  return { min: Math.floor((min - pad) / step) * step, max: Math.ceil((max + pad) / step) * step, step };
+}
+const characteristicsCache = new WeakMap();
+function modelCharacteristicsCached(model) {
+  if (!characteristicsCache.has(model)) characteristicsCache.set(model, modelCharacteristics(model));
+  return characteristicsCache.get(model);
+}
+function frequencySamples(model, minW, maxW, count = 1200) {
+  const roots = modelCharacteristicsCached(model);
+  const poles = roots.poles.filter((p) => Math.abs(p.re) < 1e-7 && p.im > 1e-7).map((p) => p.im);
+  const values = Array.from({ length: count }, (_, i) => minW * Math.pow(maxW / minW, i / (count - 1)));
+  poles.forEach((omega) => {
+    if (omega >= minW && omega <= maxW) {
+      values.push(omega);
+      for (const delta of [1e-3, 1e-5, 1e-7]) values.push(omega * (1 - delta), omega * (1 + delta));
+    }
   });
-  const dc = Math.abs(evalPolynomial(model.denominator, { re: 0, im: 0 }).re) < 1e-10 ? null : frequencyResponse(model.numerator, model.denominator, 0);
-  const negative = positive.slice().reverse().map((point) => ({ omega: -point.omega, x: point.x, y: -point.y }));
-  return { negative, dc: dc ? { omega: 0, x: gain * dc.re, y: gain * dc.im } : null, positive, maxFrequency, imaginaryAxisPole: imaginaryAxisPoles.length > 0, imaginaryAxisPoles };
+  let previousPhase = null;
+  return [...new Set(values)].sort((a, b) => a - b).filter((w) => w >= minW && w <= maxW).map((omega) => {
+    if (poles.some((p) => Math.abs(omega - p) < 1e-10 * Math.max(1, p))) {
+      previousPhase = null; return { omega, magnitude: NaN, phase: NaN, re: NaN, im: NaN };
+    }
+    const response = frequencyResponse(model.numerator, model.denominator, omega);
+    let phase = Math.atan2(response.im, response.re) * 180 / Math.PI;
+    const factorPhase = (list) => list.reduce((sum, p) => sum + Math.atan2(omega - p.im, -p.re) * 180 / Math.PI, 0);
+    const target = (model.numerator[0] < 0 ? 180 : 0) + factorPhase(roots.zeros) - factorPhase(roots.poles);
+    phase += Math.round((target - phase) / 360) * 360;
+    if (previousPhase !== null && !poles.some((p) => p > previousPhase.omega && p < omega)) {
+      while (phase - previousPhase.phase > 180) phase -= 360;
+      while (phase - previousPhase.phase < -180) phase += 360;
+    }
+    previousPhase = { omega, phase };
+    return { omega, magnitude: 20 * Math.log10(absComplex(response)), phase, re: response.re, im: response.im };
+  });
+}
+function nyquistData(model, gain = 1, samples = 800) {
+  const roots = modelCharacteristicsCached(model);
+  const axisPoles = roots.poles.filter((p) => Math.abs(p.re) < 1e-7 * Math.max(1, absComplex(p)));
+  const positivePoles = dedupeNumbers(axisPoles.map((p) => p.im).filter((w) => w > 1e-7));
+  const originPole = axisPoles.some((p) => Math.abs(p.im) < 1e-7), frequencies = [0, ...positivePoles];
+  const maxFrequency = Math.max(1, ...roots.poles.map(absComplex), ...roots.zeros.map(absComplex)) * 1e6;
+  const mapAt = (s) => {
+    const response = divComplex(evalPolynomial(model.numerator, s), evalPolynomial(model.denominator, s));
+    return { x: gain * response.re, y: gain * response.im };
+  };
+  const epsAt = (w) => Math.max(1e-12, Math.min(1e-7 * Math.max(1, w),
+    ...frequencies.filter((q) => q !== w).map((q) => Math.abs(q - w) * 1e-5)));
+  const positiveBranches = [];
+  for (let i = 0; i < frequencies.length; i += 1) {
+    const low = frequencies[i], high = frequencies[i + 1], lowPole = i > 0 || originPole;
+    const lo = low + (lowPole ? epsAt(low) : Math.max(1e-10, maxFrequency * 1e-14)), values = [];
+    if (high !== undefined) {
+      const hi = high - epsAt(high), span = high - low;
+      const logit = (w) => Math.log((w - low) / (high - w)), t0 = logit(lo), t1 = logit(hi);
+      for (let j = 0; j <= samples; j += 1) values.push(low + span / (1 + Math.exp(-(t0 + (t1 - t0) * j / samples))));
+    } else {
+      const start = lo - low;
+      for (let j = 0; j <= samples; j += 1) values.push(low + start * Math.pow(maxFrequency / start, j / samples));
+    }
+    if (i === 0 && !originPole) values.unshift(0);
+    positiveBranches.push({ name: "正频率支路 " + (i + 1), data: values.map((omega) => ({ omega, ...mapAt({ re: 0, im: omega }) })), low, high: high ?? Infinity });
+  }
+  const detours = frequencies.filter((w) => w > 0 || originPole).map((omega) => {
+    const epsilon = epsAt(omega), startAngle = omega === 0 ? 0 : -Math.PI / 2;
+    const data = Array.from({ length: 361 }, (_, i) => {
+      const theta = startAngle + (Math.PI / 2 - startAngle) * i / 360;
+      return { ...mapAt({ re: epsilon * Math.cos(theta), im: omega + epsilon * Math.sin(theta) }), contour: true };
+    });
+    return { name: "绕行映射 ω=" + Number(omega.toPrecision(5)), omega, epsilon, data };
+  });
+  const positiveContour = [];
+  if (originPole) positiveContour.push(...detours.find((d) => d.omega === 0).data);
+  positiveBranches.forEach((branch) => {
+    positiveContour.push(...branch.data);
+    if (Number.isFinite(branch.high)) positiveContour.push(...detours.find((d) => d.omega === branch.high).data);
+  });
+  const negativeBranches = positiveBranches.slice().reverse().map((branch) => ({
+    name: branch.name.replace("正", "负"), data: branch.data.slice().reverse().map((p) => ({ ...p, omega: -p.omega, y: -p.y })),
+  }));
+  const contour = positiveContour.slice().reverse().map((p) => ({ x: p.x, y: -p.y })).concat(positiveContour);
+  const derivativeDen = polynomialDerivative(model.denominator), secondDen = polynomialDerivative(derivativeDen), derivativeNum = polynomialDerivative(model.numerator);
+  const asymptotes = [], limits = [];
+  frequencies.filter((w) => w > 0 || originPole).forEach((omega) => {
+    const p = { re: 0, im: omega }, d1 = evalPolynomial(derivativeDen, p);
+    if (axisPoles.filter((q) => Math.abs(q.im - omega) < 1e-5).length > 1 || absComplex(d1) < 1e-14) {
+      limits.push({ omega, text: "高重虚轴极点，按分支数值极限观察" }); return;
+    }
+    const residue = divComplex(evalPolynomial(model.numerator, p), d1);
+    if (absComplex(residue) < 1e-12) return;
+    const constant = divComplex(subComplex(evalPolynomial(derivativeNum, p),
+      mulComplex(residue, mulComplex({ re: 0.5, im: 0 }, evalPolynomial(secondDen, p)))), d1);
+    for (const side of (omega === 0 ? [1] : [-1, 1])) {
+      const direction = { x: side * residue.im, y: -side * residue.re }, length = Math.hypot(direction.x, direction.y);
+      const unit = { x: direction.x / length, y: direction.y / length };
+      asymptotes.push({ origin: { x: gain * constant.re, y: gain * constant.im }, direction: unit, omega, side });
+      limits.push({ omega, side, angle: Math.atan2(unit.y, unit.x) * 180 / Math.PI });
+    }
+  });
+  const dc = originPole ? null : { omega: 0, ...mapAt({ re: 0, im: 0 }) };
+  return { positive: positiveBranches.flatMap((b) => b.data), negative: negativeBranches.flatMap((b) => b.data),
+    positiveBranches, negativeBranches, detours, contour, dc, asymptotes, limits, maxFrequency,
+    imaginaryAxisPole: axisPoles.length > 0, imaginaryAxisPoles: axisPoles };
+}
+function nyquistAutoBounds(data, negative = false) {
+  const branches = negative ? [...data.positiveBranches, ...data.negativeBranches] : data.positiveBranches;
+  // Include a finite portion of every branch without letting singular endpoints dominate Auto.
+  const minima = branches.map((branch) => Math.min(...branch.data.filter(finitePoint).map((p) => Math.hypot(p.x, p.y)))).filter(Number.isFinite);
+  const dcRadius = finitePoint(data.dc) ? Math.hypot(data.dc.x, data.dc.y) : 0;
+  const radius = Math.max(4, dcRadius * 1.15, ...minima.map((r) => r * 2));
+  const focus = branches.flatMap((branch) => branch.data.filter((p) => finitePoint(p) && Math.hypot(p.x, p.y) <= radius));
+  focus.push({ x: -1, y: 0 }, { x: 0, y: 0 });
+  if (finitePoint(data.dc)) focus.push(data.dc);
+  return {
+    x: niceBounds(Math.min(...focus.map((p) => p.x)), Math.max(...focus.map((p) => p.x))),
+    y: niceBounds(Math.min(...focus.map((p) => p.y)), Math.max(...focus.map((p) => p.y))),
+  };
+}
+function nyquistWinding(data, critical = -1) {
+  const points = data.contour || [...data.negative, ...(data.dc ? [data.dc] : []), ...data.positive];
+  if (points.some((p) => !finitePoint(p))) return null;
+  let angleSum = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = { re: points[i].x - critical, im: points[i].y }, next = points[(i + 1) % points.length], b = { re: next.x - critical, im: next.y };
+    if (absComplex(a) < 1e-8 || absComplex(b) < 1e-8) return null;
+    angleSum += Math.atan2(a.re * b.im - a.im * b.re, a.re * b.re + a.im * b.im);
+  }
+  return Math.round(angleSum / (2 * Math.PI)) || 0;
+}
+// Minimum-total-displacement matching keeps branches distinct at crossings.
+function matchRoots(previous, roots) {
+  const n = roots.length, u = new Array(n + 1).fill(0), v = u.slice(), p = u.slice(), way = u.slice();
+  for (let i = 1; i <= n; i += 1) {
+    p[0] = i; let j0 = 0;
+    const min = new Array(n + 1).fill(Infinity), used = new Array(n + 1).fill(false);
+    do {
+      used[j0] = true;
+      const i0 = p[j0]; let delta = Infinity, j1 = 0;
+      for (let j = 1; j <= n; j += 1) if (!used[j]) {
+        const cost = absComplex(subComplex(previous[i0 - 1], roots[j - 1])) - u[i0] - v[j];
+        if (cost < min[j]) { min[j] = cost; way[j] = j0; }
+        if (min[j] < delta) { delta = min[j]; j1 = j; }
+      }
+      for (let j = 0; j <= n; j += 1) { if (used[j]) { u[p[j]] += delta; v[j] -= delta; } else min[j] -= delta; }
+      j0 = j1;
+    } while (p[j0] !== 0);
+    do { const j1 = way[j0]; p[j0] = p[j1]; j0 = j1; } while (j0 !== 0);
+  }
+  const assigned = [];
+  for (let j = 1; j <= n; j += 1) assigned[p[j] - 1] = roots[j - 1];
+  return assigned;
+}
+function rootLocusData(model, maxGain) {
+  const info = modelCharacteristicsCached(model), breakpoints = findBreakawayPoints(model, info);
+  const specialGains = breakpoints.map((s) => -evalPolynomial(model.denominator, { re: s, im: 0 }).re / evalPolynomial(model.numerator, { re: s, im: 0 }).re).filter((k) => k > 0 && k <= maxGain);
+  const startGain = Math.min(1e-8, maxGain * 1e-10), count = Math.max(440, Math.ceil(Math.log10(maxGain / startGain) * 32));
+  const gains = [0, ...Array.from({ length: count }, (_, i) => startGain * Math.pow(maxGain / startGain, i / (count - 1))),
+    ...specialGains.flatMap((k) => [k * (1 - 1e-6), k, k * (1 + 1e-6)]).filter((k) => k <= maxGain)].sort((a, b) => a - b);
+  const tracks = info.poles.map(() => []); let previous = info.poles;
+  for (const gain of gains) {
+    const sorted = matchRoots(previous, gain === 0 ? info.poles : polynomialRoots(closedLoopPolynomial(model, gain)));
+    sorted.forEach((p, i) => tracks[i].push({ x: p.re, y: p.im, gain })); previous = sorted;
+  }
+  const difference = info.poles.length - info.zeros.length;
+  const centroid = difference ? (info.poles.reduce((s, p) => s + p.re, 0) - info.zeros.reduce((s, p) => s + p.re, 0)) / difference : null;
+  const angles = Array.from({ length: Math.max(0, difference) }, (_, i) => ((model.numerator[0] / model.denominator[0] > 0 ? 2 * i + 1 : 2 * i) * 180 / difference));
+  const real = [...info.poles, ...info.zeros].filter((p) => Math.abs(p.im) < 1e-6).map((p) => p.re).sort((a, b) => a - b), edges = [-Infinity, ...new Set(real), Infinity];
+  const intervals = edges.slice(0, -1).flatMap((a, i) => {
+    const b = edges[i + 1], probe = !Number.isFinite(a) ? b - 1 : !Number.isFinite(b) ? a + 1 : (a + b) / 2, odd = real.filter((x) => x > probe).length % 2 === 1;
+    return odd === (model.numerator[0] / model.denominator[0] > 0) ? [{ a, b }] : [];
+  });
+  const phaseSum = (p, list) => list.reduce((sum, q) => sum + Math.atan2(p.im - q.im, p.re - q.re) * 180 / Math.PI, 0);
+  const angle = (a) => ((a % 360) + 360) % 360;
+  const baseAngle = model.numerator[0] / model.denominator[0] > 0 ? 180 : 0;
+  const departure = info.poles.filter((p) => Math.abs(p.im) > 1e-7).map((p) => ({
+    point: p, angle: angle(baseAngle + phaseSum(p, info.zeros) - phaseSum(p, info.poles.filter((q) => q !== p))),
+    repeated: info.poles.some((q) => q !== p && absComplex(subComplex(p, q)) < 1e-5),
+  }));
+  const arrival = info.zeros.filter((p) => Math.abs(p.im) > 1e-7).map((p) => ({
+    point: p, angle: angle(baseAngle - phaseSum(p, info.zeros.filter((q) => q !== p)) + phaseSum(p, info.poles)),
+    repeated: info.zeros.some((q) => q !== p && absComplex(subComplex(p, q)) < 1e-5),
+  }));
+  return { info, tracks, breakpoints, centroid, angles, intervals, departure, arrival, maxGain };
 }
 
-function nyquistWinding(data, critical) {
-  const path = [...data.negative, ...(data.dc ? [data.dc] : []), ...data.positive].map((point) => ({ re: point.x - critical, im: point.y }));
-  let angleSum = 0;
-  for (let i = 1; i < path.length; i += 1) {
-    const a = path[i - 1]; const b = path[i];
-    const cross = a.re * b.im - a.im * b.re;
-    const dot = a.re * b.re + a.im * b.im;
-    angleSum += Math.atan2(cross, dot);
-  }
-  return Math.round(angleSum / (2 * Math.PI));
-}
 
 const lineChartState = new WeakMap();
-
-function makeSvgLineChart(container, series, options) {
+const activeCharts = new Map();
+const plotHint = "滚轮缩放 · 拖动平移 · 单击固定读数 · 双击恢复设置";
+const plotNumber = (v) => Math.abs(v) < 1e-12 ? "0" : Number(v.toPrecision(5)).toString();
+function frequencyTick(logValue) {
+  const omega = Math.pow(10, logValue), exponent = Math.floor(logValue + 1e-10);
+  const superscripts = { "-": "⁻", "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹" };
+  const power = String(exponent).split("").map((c) => superscripts[c]).join("");
+  return (Math.abs(logValue - Math.round(logValue)) < 1e-8 ? "" : Number((omega / Math.pow(10, exponent)).toPrecision(3)) + "×") + "10" + power;
+}
+function clipSegment(a, b, domain) {
+  if (!finitePoint(a) || !finitePoint(b)) return null;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  let start = 0, end = 1;
+  const ps = [-dx, dx, -dy, dy], qs = [a.x - domain.xMin, domain.xMax - a.x, a.y - domain.yMin, domain.yMax - a.y];
+  for (let i = 0; i < 4; i += 1) {
+    if (Math.abs(ps[i]) < 1e-30) { if (qs[i] < 0) return null; }
+    else {
+      const t = qs[i] / ps[i];
+      if (ps[i] < 0) start = Math.max(start, t); else end = Math.min(end, t);
+      if (start > end) return null;
+    }
+  }
+  return [{ x: a.x + dx * start, y: a.y + dy * start }, { x: a.x + dx * end, y: a.y + dy * end }];
+}
+function radiusSegments(a, b, radius) {
+  if (!radius) return [{ a, b, far: false }];
+  const dx = b.x - a.x, dy = b.y - a.y, A = dx * dx + dy * dy, B = 2 * (a.x * dx + a.y * dy), C = a.x * a.x + a.y * a.y - radius * radius;
+  const discriminant = B * B - 4 * A * C, ts = [0, 1];
+  if (A > 0 && discriminant > 0) {
+    for (const t of [(-B - Math.sqrt(discriminant)) / (2 * A), (-B + Math.sqrt(discriminant)) / (2 * A)]) if (t > 1e-12 && t < 1 - 1e-12) ts.push(t);
+  }
+  ts.sort((x, y) => x - y);
+  const at = (t) => ({ x: a.x + dx * t, y: a.y + dy * t });
+  return ts.slice(0, -1).map((t, i) => ({ a: at(t), b: at(ts[i + 1]), far: Math.hypot(at((t + ts[i + 1]) / 2).x, at((t + ts[i + 1]) / 2).y) > radius }));
+}
+function makeSvgLineChart(container, inputSeries, originalOptions) {
   const svg = container.querySelector("svg");
-  const width = Math.max(320, Math.round(container.clientWidth || 700));
-  const height = Math.max(160, Math.round(container.clientHeight || 260));
-  const left = 54; const right = 17; const top = 13; const bottom = 34;
-  const plotWidth = width - left - right; const plotHeight = height - top - bottom;
-  const xMin = options.viewDomain?.xMin ?? options.xMin ?? Math.min(...series.flatMap((s) => s.data.map((p) => p.x)));
-  const xMax = options.viewDomain?.xMax ?? options.xMax ?? Math.max(...series.flatMap((s) => s.data.map((p) => p.x)));
-  let yMin = options.viewDomain?.yMin ?? options.yMin ?? Math.min(...series.flatMap((s) => s.data.map((p) => p.y)));
-  let yMax = options.viewDomain?.yMax ?? options.yMax ?? Math.max(...series.flatMap((s) => s.data.map((p) => p.y)));
-  if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) { yMin = -1; yMax = 1; }
-  if (Math.abs(yMax - yMin) < 1e-8) { yMin -= 1; yMax += 1; }
-  const pad = options.viewDomain || options.padding === false ? 0 : (yMax - yMin) * 0.08;
-  yMin -= pad; yMax += pad;
-  const sx = (x) => left + (x - xMin) / (xMax - xMin || 1) * plotWidth;
-  const sy = (y) => top + (yMax - y) / (yMax - yMin) * plotHeight;
-  const xTicks = options.xTicks ?? 5; const yTicks = options.yTicks ?? 4;
-  const xLabel = options.xLabel || "t (s)"; const yLabel = options.yLabel || "y(t)";
-  const fmt = options.formatY || ((value) => Number(value.toPrecision(3)).toString());
-  const fmtX = options.formatX || ((value) => Number(value.toPrecision(3)).toString());
-  let markup = "";
-  for (let i = 0; i <= yTicks; i += 1) {
-    const value = yMin + (yMax - yMin) * i / yTicks; const y = sy(value);
-    markup += `<line class="chart-grid" x1="${left}" y1="${y}" x2="${width-right}" y2="${y}"/><text class="chart-tick" x="${left-8}" y="${y+3}" text-anchor="end">${fmt(value)}</text>`;
+  const options = { ...originalOptions };
+  let state = lineChartState.get(container);
+  if (!state) { state = { attached: false, pinned: false, view: null }; lineChartState.set(container, state); }
+  if (!options.interaction) {
+    const key = options.viewKey || JSON.stringify([options.xMin, options.xMax, options.yMin, options.yMax]);
+    if (state.key !== key) { state.view = null; state.pinned = false; }
+    state.key = key; state.baseOptions = { ...options }; state.baseSeries = inputSeries;
   }
-  for (let i = 0; i <= xTicks; i += 1) {
-    const value = xMin + (xMax - xMin) * i / xTicks; const x = sx(value);
-    markup += `<line class="chart-grid" x1="${x}" y1="${top}" x2="${x}" y2="${height-bottom}"/><text class="chart-tick" x="${x}" y="${height-13}" text-anchor="middle">${fmtX(value)}</text>`;
+  const css = getComputedStyle(container);
+  const width = Math.max(220, container.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight));
+  const height = Math.max(180, container.clientHeight - parseFloat(css.paddingTop) - parseFloat(css.paddingBottom));
+  let left = 65, top = 20, plotWidth = width - 86, plotHeight = height - 70;
+  let domain = state.view || {
+    xMin: options.xMin, xMax: options.xMax,
+    yMin: options.yMin, yMax: options.yMax,
+  };
+  if (!Number.isFinite(domain.xMin)) {
+    const xs = inputSeries.flatMap((s) => s.data.filter(finitePoint).map((p) => p.x));
+    domain = { ...domain, xMin: Math.min(...xs), xMax: Math.max(...xs) };
   }
-  markup += `<line class="chart-axis" x1="${left}" y1="${top}" x2="${left}" y2="${height-bottom}"/><line class="chart-axis" x1="${left}" y1="${height-bottom}" x2="${width-right}" y2="${height-bottom}"/>`;
-  if (options.reference !== undefined && options.reference >= yMin && options.reference <= yMax) {
-    const y = sy(options.reference);
-    markup += `<line class="chart-reference" x1="${left}" y1="${y}" x2="${width-right}" y2="${y}"/><text class="chart-reference-label" x="${width-right-3}" y="${y-5}" text-anchor="end">最终值 ${fmt(options.reference)}</text>`;
+  if (!Number.isFinite(domain.yMin) || !Number.isFinite(domain.yMax)) {
+    const ys = inputSeries.flatMap((s) => s.data.filter(finitePoint).map((p) => p.y));
+    const bounds = niceBounds(Math.min(...ys), Math.max(...ys));
+    domain = { ...domain, yMin: bounds.min, yMax: bounds.max };
   }
-  (options.verticals || []).forEach((line) => {
-    if (line.x < xMin || line.x > xMax) return;
-    const x = sx(line.x);
-    markup += '<line class="chart-annotation-line ' + (line.className || "") + '" x1="' + x + '" y1="' + top + '" x2="' + x + '" y2="' + (height - bottom) + '"/>';
-    if (line.label) markup += '<text class="chart-annotation-label" x="' + (x + 4) + '" y="' + (top + 12 + (line.offset || 0)) + '">' + line.label + '</text>';
+  if (domain.xMax <= domain.xMin) domain.xMax = domain.xMin + 1;
+  if (domain.yMax <= domain.yMin) domain.yMax = domain.yMin + 1;
+  if (options.equalScale && options.expandAutoAxes) {
+    const units = Math.max((domain.xMax - domain.xMin) / plotWidth, (domain.yMax - domain.yMin) / plotHeight);
+    const cx = (domain.xMin + domain.xMax) / 2, cy = (domain.yMin + domain.yMax) / 2;
+    domain = { xMin: cx - units * plotWidth / 2, xMax: cx + units * plotWidth / 2, yMin: cy - units * plotHeight / 2, yMax: cy + units * plotHeight / 2 };
+    options.xStep = niceStep(domain.xMax - domain.xMin, Math.max(2, plotWidth / 75));
+    options.yStep = niceStep(domain.yMax - domain.yMin, Math.max(2, plotHeight / 44));
+  }
+  if (options.equalScale) {
+    const scale = Math.min(plotWidth / (domain.xMax - domain.xMin), plotHeight / (domain.yMax - domain.yMin));
+    const pw = scale * (domain.xMax - domain.xMin), ph = scale * (domain.yMax - domain.yMin);
+    left += (plotWidth - pw) / 2; top += (plotHeight - ph) / 2; plotWidth = pw; plotHeight = ph;
+  }
+  const sx = (x) => left + (x - domain.xMin) / (domain.xMax - domain.xMin) * plotWidth;
+  const sy = (y) => top + (domain.yMax - y) / (domain.yMax - domain.yMin) * plotHeight;
+  let series = options.sample ? options.sample(domain) : inputSeries;
+  state.options = options; state.domain = domain; state.series = series; state.layout = { width, height, left, top, plotWidth, plotHeight, sx, sy };
+  state.pinned = false;
+  const fmtX = options.logX ? frequencyTick : (options.formatX || plotNumber);
+  const fmtY = options.formatY || plotNumber;
+  let xTicks;
+  if (options.logX && domain.xMax - domain.xMin >= 1) {
+    const stride = Math.max(1, Math.ceil((domain.xMax - domain.xMin) / Math.max(2, plotWidth / 75)));
+    xTicks = [];
+    for (let x = Math.ceil(domain.xMin / stride) * stride; x <= domain.xMax + 1e-8; x += stride) xTicks.push(x);
+  } else {
+    const step = state.view ? niceStep(domain.xMax - domain.xMin, Math.max(2, plotWidth / 75)) : options.xStep;
+    xTicks = axisTicks(domain.xMin, domain.xMax, step, Boolean(state.view) || options.expandAutoAxes || options.xStep === undefined);
+  }
+  const yTicks = axisTicks(domain.yMin, domain.yMax, state.view ? niceStep(domain.yMax - domain.yMin, Math.max(2, plotHeight / 44)) : options.yStep, Boolean(state.view) || options.expandAutoAxes || options.yStep === undefined);
+  const id = container.id + "-clip", endX = left + plotWidth, endY = top + plotHeight;
+  let markup = '<defs><clipPath id="' + id + '"><rect x="' + left + '" y="' + top + '" width="' + plotWidth + '" height="' + plotHeight + '"/></clipPath></defs>';
+  const xStride = Math.max(1, Math.ceil(xTicks.length / Math.max(2, plotWidth / 64)));
+  const yStride = Math.max(1, Math.ceil(yTicks.length / Math.max(2, plotHeight / 27)));
+  xTicks.forEach((value, i) => {
+    markup += '<line class="chart-grid" x1="' + sx(value) + '" x2="' + sx(value) + '" y1="' + top + '" y2="' + endY + '"/>';
+    if (i % xStride === 0) markup += '<text class="chart-tick" x="' + sx(value) + '" y="' + (endY + 20) + '" text-anchor="middle">' + fmtX(value) + '</text>';
   });
+  yTicks.forEach((value, i) => {
+    markup += '<line class="chart-grid" x1="' + left + '" x2="' + endX + '" y1="' + sy(value) + '" y2="' + sy(value) + '"/>';
+    if (i % yStride === 0) markup += '<text class="chart-tick" x="' + (left - 8) + '" y="' + (sy(value) + 4) + '" text-anchor="end">' + fmtY(value) + '</text>';
+  });
+  markup += '<rect class="plot-frame" x="' + left + '" y="' + top + '" width="' + plotWidth + '" height="' + plotHeight + '"/><g clip-path="url(#' + id + ')">';
+  if (domain.xMin <= 0 && domain.xMax >= 0 && !options.logX) markup += '<line class="axis-zero" x1="' + sx(0) + '" x2="' + sx(0) + '" y1="' + top + '" y2="' + endY + '"/>';
+  if (domain.yMin <= 0 && domain.yMax >= 0) markup += '<line class="axis-zero" x1="' + left + '" x2="' + endX + '" y1="' + sy(0) + '" y2="' + sy(0) + '"/>';
+  (options.horizontals || (options.reference === undefined ? [] : [options.reference])).forEach((y) => {
+    if (y >= domain.yMin && y <= domain.yMax) markup += '<line class="chart-reference" x1="' + left + '" x2="' + endX + '" y1="' + sy(y) + '" y2="' + sy(y) + '"/>';
+  });
+  (options.verticals || []).forEach((line) => {
+    if (line.x >= domain.xMin && line.x <= domain.xMax) markup += '<line class="chart-annotation-line" x1="' + sx(line.x) + '" x2="' + sx(line.x) + '" y1="' + top + '" y2="' + endY + '"/>';
+  });
+  (options.rays || []).forEach((ray) => {
+    const reach = 4 * (Math.hypot(domain.xMax - domain.xMin, domain.yMax - domain.yMin) + Math.hypot(ray.origin.x, ray.origin.y));
+    const cut = clipSegment(ray.origin, { x: ray.origin.x + ray.direction.x * reach, y: ray.origin.y + ray.direction.y * reach }, domain);
+    if (cut) markup += '<path class="plot-asymptote" d="M' + sx(cut[0].x) + ',' + sy(cut[0].y) + ' L' + sx(cut[1].x) + ',' + sy(cut[1].y) + '"/>';
+  });
+  state.visibleSegments = [];
   series.forEach((item) => {
-    const data = item.data.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-    const d = data.map((point, i) => `${i === 0 ? "M" : "L"}${sx(point.x).toFixed(2)},${sy(point.y).toFixed(2)}`).join(" ");
-    if (item.fill && d) markup += `<path class="plot-fill" d="${d} L${sx(data[data.length-1].x)},${sy(options.fillBase ?? yMin)} L${sx(data[0].x)},${sy(options.fillBase ?? yMin)} Z"/>`;
-    markup += `<path class="${item.className || "chart-data-line"}" d="${d}"/>`;
+    let normal = "", far = "", travelled = 0, arrows = 0;
+    for (let i = 1; i < item.data.length; i += 1) {
+      const a = item.data[i - 1], b = item.data[i];
+      if (!finitePoint(a) || !finitePoint(b)) continue;
+      for (const segment of radiusSegments(a, b, options.radialThreshold)) {
+        const clipped = clipSegment(segment.a, segment.b, domain);
+        if (!clipped) continue;
+        const p = { x: sx(clipped[0].x), y: sy(clipped[0].y) }, q = { x: sx(clipped[1].x), y: sy(clipped[1].y) };
+        const d = 'M' + p.x.toFixed(3) + ',' + p.y.toFixed(3) + 'L' + q.x.toFixed(3) + ',' + q.y.toFixed(3);
+        if (segment.far) far += d; else normal += d;
+        if (item.inspectable !== false) state.visibleSegments.push({ a, b, name: item.name || "曲线", p, q, className: item.className });
+        const length = Math.hypot(q.x - p.x, q.y - p.y); travelled += length;
+        if (item.arrows && length > 0.1 && travelled > 65 && arrows < 4) {
+          const t = 0.6, x = p.x + (q.x - p.x) * t, y = p.y + (q.y - p.y) * t;
+          const angle = Math.atan2(q.y - p.y, q.x - p.x) * 180 / Math.PI;
+          markup += '<path class="direction-arrow ' + (item.className || "") + '" transform="translate(' + x + ' ' + y + ') rotate(' + angle + ')" d="M-7,-4 L0,0 L-7,4"/>';
+          travelled = -60; arrows += 1;
+        }
+      }
+    }
+    const cls = item.className || "chart-data-line";
+    markup += '<path class="' + cls + '" d="' + normal + '"/><path class="' + cls + ' far-tail" d="' + far + '"/>';
   });
   (options.points || []).forEach((point) => {
-    if (point.x < xMin || point.x > xMax || point.y < yMin || point.y > yMax) return;
-    const x = sx(point.x); const y = sy(point.y);
-    markup += '<circle class="chart-annotation-point ' + (point.className || "") + '" cx="' + x + '" cy="' + y + '" r="3.5"/><text class="chart-annotation-label" x="' + (x + 5) + '" y="' + (y - 7) + '">' + (point.label || "") + '</text>';
+    if (point.x < domain.xMin || point.x > domain.xMax || point.y < domain.yMin || point.y > domain.yMax) return;
+    const x = sx(point.x), y = sy(point.y);
+    if (point.symbol === "cross") markup += '<path class="pole-symbol" d="M' + (x - 5) + ',' + (y - 5) + 'l10,10 M' + (x - 5) + ',' + (y + 5) + 'l10,-10"/>';
+    else markup += '<circle class="' + (point.symbol === "zero" ? "zero-symbol" : point.className || "chart-annotation-point") + '" cx="' + x + '" cy="' + y + '" r="' + (point.radius || 4) + '"/>';
   });
-  markup += `<text class="chart-axis-title" x="${left + plotWidth/2}" y="${height-1}" text-anchor="middle">${xLabel}</text><text class="chart-axis-title" transform="translate(13 ${top+plotHeight/2}) rotate(-90)" text-anchor="middle">${yLabel}</text>`;
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.innerHTML = markup;
-  attachChartInteractions(container, series, options, { width, height, left, right, top, bottom, plotWidth, plotHeight, xMin, xMax, yMin, yMax });
+  markup += '</g><text class="chart-axis-title" x="' + (left + plotWidth / 2) + '" y="' + (height - 6) + '" text-anchor="middle">' + (options.xLabel || "t (s)") + '</text><text class="chart-axis-title" transform="translate(14 ' + (top + plotHeight / 2) + ') rotate(-90)" text-anchor="middle">' + (options.yLabel || "y(t)") + '</text>';
+  svg.setAttribute("viewBox", "0 0 " + width + " " + height); svg.innerHTML = markup;
+  svg.dataset.xMin = domain.xMin; svg.dataset.xMax = domain.xMax; svg.dataset.yMin = domain.yMin; svg.dataset.yMax = domain.yMax;
+  activeCharts.set(container.id, container);
+  attachChartInteractions(container, state);
 }
-
-function attachChartInteractions(container, series, options, layout) {
+function attachChartInteractions(container, state) {
   const svg = container.querySelector("svg");
-  let state = lineChartState.get(container);
-  if (!state) { state = { zoom: null, pinned: false }; lineChartState.set(container, state); }
-  state.series = series; state.options = options; state.layout = layout;
-  state.domain = { xMin: layout.xMin, xMax: layout.xMax, yMin: layout.yMin, yMax: layout.yMax };
-  if (!options.viewDomain) {
-    state.baseOptions = options;
-    state.pinned = false;
-  }
-  let readout = container.nextElementSibling && container.nextElementSibling.classList.contains("chart-readout") ? container.nextElementSibling : null;
-  if (!readout) {
-    readout = document.createElement("div"); readout.className = "chart-readout"; readout.setAttribute("aria-live", "polite");
-    container.insertAdjacentElement("afterend", readout);
-  }
-  state.readout = readout;
-  const hint = () => state.options.readoutHint || "滚轮缩放 · 双击恢复 · 鼠标移到曲线上读取坐标";
-  if (!state.listenersAttached) {
-    const coordinate = (event) => {
-      const rect = svg.getBoundingClientRect(); const current = state.layout;
-      return { x: (event.clientX - rect.left) * current.width / rect.width, y: (event.clientY - rect.top) * current.height / rect.height };
-    };
-    const inspect = (event) => {
-      const pos = coordinate(event); const current = state.layout; const domain = state.domain;
-      if (pos.x < current.left || pos.x > current.width - current.right || pos.y < current.top || pos.y > current.height - current.bottom) return false;
-      let nearest = null; let minDistance = Infinity;
-      state.series.forEach((item) => item.data.forEach((point) => {
-        if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
-        const px = current.left + (point.x - domain.xMin) / (domain.xMax - domain.xMin || 1) * current.plotWidth;
-        const py = current.top + (domain.yMax - point.y) / (domain.yMax - domain.yMin || 1) * current.plotHeight;
-        const dx = (px - pos.x) / current.plotWidth; const dy = (py - pos.y) / current.plotHeight;
-        const distance = dx * dx + dy * dy;
-        if (distance < minDistance) { minDistance = distance; nearest = { point, px, py, name: item.name || item.label || "" }; }
-      }));
-      if (!nearest) return false;
-      const pxToX = domain.xMin + (nearest.px - current.left) / current.plotWidth * (domain.xMax - domain.xMin);
-      const currentOptions = state.options;
-      const xText = currentOptions.formatReadoutX ? currentOptions.formatReadoutX(nearest.point.x) : (currentOptions.formatX ? currentOptions.formatX(nearest.point.x) : Number(nearest.point.x.toPrecision(5)).toString());
-      const yText = currentOptions.formatReadoutY ? currentOptions.formatReadoutY(nearest.point.y) : (currentOptions.formatY ? currentOptions.formatY(nearest.point.y) : Number(nearest.point.y.toPrecision(5)).toString());
-      state.readout.textContent = (nearest.name ? nearest.name + " · " : "") + currentOptions.xLabel + " = " + xText + " · " + currentOptions.yLabel + " = " + yText;
-      let crosshair = svg.querySelector(".chart-crosshair");
-      if (!crosshair) {
-        crosshair = document.createElementNS("http://www.w3.org/2000/svg", "g"); crosshair.setAttribute("class", "chart-crosshair");
-        crosshair.innerHTML = '<line class="crosshair-x"/><line class="crosshair-y"/><circle class="crosshair-point" r="4"/>';
-        svg.appendChild(crosshair);
-      }
-      const v = crosshair.querySelector(".crosshair-x"); v.setAttribute("x1", nearest.px); v.setAttribute("x2", nearest.px); v.setAttribute("y1", current.top); v.setAttribute("y2", current.height - current.bottom);
-      const h = crosshair.querySelector(".crosshair-y"); h.setAttribute("x1", current.left); h.setAttribute("x2", current.width - current.right); h.setAttribute("y1", nearest.py); h.setAttribute("y2", nearest.py);
-      const dot = crosshair.querySelector(".crosshair-point"); dot.setAttribute("cx", nearest.px); dot.setAttribute("cy", nearest.py);
-      state.lastPoint = { x: pxToX, y: nearest.point.y };
-      return true;
-    };
-    svg.addEventListener("pointermove", (event) => { if (!state.pinned) inspect(event); });
-    svg.addEventListener("pointerleave", () => {
-      if (!state.pinned) { state.readout.textContent = hint(); svg.querySelector(".chart-crosshair")?.remove(); }
-    });
-    svg.addEventListener("click", (event) => {
-      if (state.pinned) {
-        state.pinned = false; state.readout.textContent = hint(); svg.querySelector(".chart-crosshair")?.remove();
-      } else {
-        state.pinned = inspect(event);
-      }
-    });
-    svg.addEventListener("dblclick", (event) => {
-      event.preventDefault(); state.pinned = false;
-      if (state.baseOptions) makeSvgLineChart(container, state.series, state.baseOptions);
-    });
-    svg.addEventListener("wheel", (event) => {
-      event.preventDefault();
-      const pos = coordinate(event); const current = state.layout; const domain = state.domain;
-      const fx = Math.min(1, Math.max(0, (pos.x - current.left) / current.plotWidth));
-      const fy = Math.min(1, Math.max(0, (pos.y - current.top) / current.plotHeight));
-      const cx = domain.xMin + (domain.xMax - domain.xMin) * fx;
-      const cy = domain.yMax - (domain.yMax - domain.yMin) * fy;
-      const factor = event.deltaY < 0 ? 0.82 : 1 / 0.82;
-      const dx = (domain.xMax - domain.xMin) * factor; const dy = (domain.yMax - domain.yMin) * factor;
-      const zoom = { xMin: cx - dx * fx, xMax: cx + dx * (1 - fx), yMin: cy - dy * (1 - fy), yMax: cy + dy * fy };
-      state.pinned = false;
-      makeSvgLineChart(container, state.series, { ...state.options, viewDomain: zoom });
-    }, { passive: false });
-    state.listenersAttached = true;
-  }
-  if (!state.pinned) state.readout.textContent = hint();
-}
-
-function drawComplexChart(container, tracks, zeros, poles, options) {
-  const svg = container.querySelector("svg");
-  const width = Math.max(320, Math.round(container.clientWidth || 700));
-  const height = Math.max(180, Math.round(container.clientHeight || 260));
-  const left = 52; const right = 20; const top = 14; const bottom = 34;
-  const all = [...tracks.flatMap((track) => track), ...zeros, ...poles, ...(options && options.lines || []).flatMap((line) => [line.start, line.end])];
-  const extent = Math.max(1, ...all.map(absComplex)) * 1.12;
-  const side = Math.min(width - left - right, height - top - bottom);
-  const plotWidth = Math.max(200, width - left - right); const plotHeight = Math.min(side, height - top - bottom);
-  const plotLeft = left + (plotWidth - plotHeight) / 2; const plotTop = top + (height - top - bottom - plotHeight) / 2;
-  const sx = (value) => plotLeft + (value + extent) / (2 * extent) * plotHeight;
-  const sy = (value) => plotTop + (extent - value) / (2 * extent) * plotHeight;
-  const centerX = sx(0); const centerY = sy(0);
-  let markup = `<rect class="chart-grid" x="${plotLeft}" y="${plotTop}" width="${plotHeight}" height="${plotHeight}" fill="none"/>`;
-  for (let i = -2; i <= 2; i += 1) {
-    const value = extent * i / 2;
-    markup += `<line class="chart-grid" x1="${sx(value)}" y1="${plotTop}" x2="${sx(value)}" y2="${plotTop+plotHeight}"/><line class="chart-grid" x1="${plotLeft}" y1="${sy(value)}" x2="${plotLeft+plotHeight}" y2="${sy(value)}"/>`;
-    if (i !== 0) markup += `<text class="chart-tick" x="${sx(value)}" y="${plotTop+plotHeight+15}" text-anchor="middle">${Number(value.toPrecision(2))}</text><text class="chart-tick" x="${plotLeft-6}" y="${sy(value)+3}" text-anchor="end">${Number(value.toPrecision(2))}</text>`;
-  }
-  markup += `<line class="axis-zero" x1="${plotLeft}" y1="${centerY}" x2="${plotLeft+plotHeight}" y2="${centerY}"/><line class="axis-zero" x1="${centerX}" y1="${plotTop}" x2="${centerX}" y2="${plotTop+plotHeight}"/>`;
-  tracks.forEach((track) => {
-    const d = track.map((point, index) => `${index ? "L" : "M"}${sx(point.re).toFixed(2)},${sy(point.im).toFixed(2)}`).join(" ");
-    markup += `<path class="root-track" d="${d}"/>`;
-  });
-  poles.forEach((point) => { markup += `<circle class="root-point" cx="${sx(point.re)}" cy="${sy(point.im)}" r="4"/>`; });
-  tracks.forEach((track) => {
-    const point = track[track.length - 1];
-    if (point) markup += `<circle class="root-end-point" cx="${sx(point.re)}" cy="${sy(point.im)}" r="2.5"/>`;
-  });
-  zeros.forEach((point) => {
-    const x = sx(point.re); const y = sy(point.im);
-    markup += `<path class="zero-cross" d="M${x-4},${y-4} L${x+4},${y+4} M${x-4},${y+4} L${x+4},${y-4}"/>`;
-  });
-  (options && options.lines || []).forEach((line) => {
-    const x1 = sx(line.start.re); const y1 = sy(line.start.im); const x2 = sx(line.end.re); const y2 = sy(line.end.im);
-    markup += `<line class="root-asymptote" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
-  });
-  markup += `<text class="chart-axis-title" x="${plotLeft+plotHeight/2}" y="${height-2}" text-anchor="middle">实轴 Re(s)</text><text class="chart-axis-title" transform="translate(13 ${plotTop+plotHeight/2}) rotate(-90)" text-anchor="middle">虚轴 Im(s)</text>`;
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.innerHTML = markup;
-  if (container.__complexChartState) container.__complexChartState.zoom = 1;
-  attachComplexChartInteractions(container, tracks, zeros, poles, { width, height, plotLeft, plotTop, plotHeight, extent });
-}
-
-function attachComplexChartInteractions(container, tracks, zeros, poles, layout) {
-  const svg = container.querySelector("svg");
-  let readout = container.nextElementSibling && container.nextElementSibling.classList.contains("chart-readout") ? container.nextElementSibling : null;
-  if (!readout) {
-    readout = document.createElement("div"); readout.className = "chart-readout"; readout.setAttribute("aria-live", "polite");
-    container.insertAdjacentElement("afterend", readout);
-  }
-  let state = container.__complexChartState;
-  if (!state) { state = { zoom: 1, attached: false }; container.__complexChartState = state; }
-  state.layout = layout; state.readout = readout;
+  const readout = document.getElementById("cursor-readout");
   if (state.attached) return;
-  svg.addEventListener("wheel", (event) => {
-    event.preventDefault();
-    const current = state.layout;
-    state.zoom = Math.min(8, Math.max(0.35, state.zoom * (event.deltaY < 0 ? 1.18 : 1 / 1.18)));
-    const viewWidth = current.width / state.zoom; const viewHeight = current.height / state.zoom;
-    const screenPoint = svg.createSVGPoint(); screenPoint.x = event.clientX; screenPoint.y = event.clientY;
-    const cursor = screenPoint.matrixTransform(svg.getScreenCTM().inverse());
-    const currentView = svg.viewBox.baseVal;
-    const ratioX = (cursor.x - currentView.x) / currentView.width;
-    const ratioY = (cursor.y - currentView.y) / currentView.height;
-    const viewX = Math.max(0, Math.min(current.width - viewWidth, cursor.x - viewWidth * ratioX));
-    const viewY = Math.max(0, Math.min(current.height - viewHeight, cursor.y - viewHeight * ratioY));
-    svg.setAttribute("viewBox", viewX + " " + viewY + " " + viewWidth + " " + viewHeight);
-    state.readout.textContent = "根轨迹视图缩放 " + state.zoom.toFixed(2) + "× · 双击恢复";
-  }, { passive: false });
-  svg.addEventListener("dblclick", () => { state.zoom = 1; const current = state.layout; svg.setAttribute("viewBox", "0 0 " + current.width + " " + current.height); state.readout.textContent = "滚轮缩放 · 双击恢复 · 移动读取 s 平面坐标"; });
-  svg.addEventListener("pointermove", (event) => {
-    const current = state.layout;
-    const screenPoint = svg.createSVGPoint(); screenPoint.x = event.clientX; screenPoint.y = event.clientY;
-    const userPoint = screenPoint.matrixTransform(svg.getScreenCTM().inverse());
-    const x = userPoint.x; const y = userPoint.y;
-    if (x < current.plotLeft || x > current.plotLeft + current.plotHeight || y < current.plotTop || y > current.plotTop + current.plotHeight) return;
-    let re = (x - current.plotLeft) / current.plotHeight * 2 * current.extent - current.extent;
-    let im = current.extent - (y - current.plotTop) / current.plotHeight * 2 * current.extent;
-    const view = svg.viewBox.baseVal; const rect = svg.getBoundingClientRect();
-    const scaleX = rect.width / view.width; const scaleY = rect.height / view.height;
-    let nearest = null; let nearestPixels = 20;
-    [...tracks.flat(), ...zeros, ...poles].forEach((point) => {
-      const px = current.plotLeft + (point.re + current.extent) / (2 * current.extent) * current.plotHeight;
-      const py = current.plotTop + (current.extent - point.im) / (2 * current.extent) * current.plotHeight;
-      const distance = Math.hypot((px - x) * scaleX, (py - y) * scaleY);
-      if (distance < nearestPixels) { nearestPixels = distance; nearest = point; }
-    });
-    if (nearest) { re = nearest.re; im = nearest.im; }
-    state.readout.textContent = "s ≈ " + formatComplex({ re, im }, 3) + " · 实轴 Re(s) = " + re.toFixed(3) + " · 虚轴 Im(s) = " + im.toFixed(3);
-  });
   state.attached = true;
+  const coordinate = (event) => {
+    const point = svg.createSVGPoint(); point.x = event.clientX; point.y = event.clientY;
+    const matrix = svg.getScreenCTM();
+    return matrix ? point.matrixTransform(matrix.inverse()) : { x: 0, y: 0 };
+  };
+  const inPlot = (pos) => pos.x >= state.layout.left && pos.x <= state.layout.left + state.layout.plotWidth && pos.y >= state.layout.top && pos.y <= state.layout.top + state.layout.plotHeight;
+  const redraw = (domain, link = true) => {
+    state.view = domain; state.pinned = false;
+    makeSvgLineChart(container, state.baseSeries, { ...state.baseOptions, interaction: true });
+    if (link && state.options.linkGroup) activeCharts.forEach((peer) => {
+      const other = lineChartState.get(peer);
+      if (peer !== container && other?.options.linkGroup === state.options.linkGroup && !peer.hidden) {
+        other.view = domain ? { ...other.domain, xMin: domain.xMin, xMax: domain.xMax } : null;
+        makeSvgLineChart(peer, other.baseSeries, { ...other.baseOptions, interaction: true });
+      }
+    });
+    const d = state.domain;
+    readout.textContent = (state.options.name || "图形") + " · 当前范围：横轴 " + (state.options.logX ? plotNumber(Math.pow(10, d.xMin)) : plotNumber(d.xMin)) + "～" + (state.options.logX ? plotNumber(Math.pow(10, d.xMax)) : plotNumber(d.xMax)) + "；纵轴 " + plotNumber(d.yMin) + "～" + plotNumber(d.yMax) + " · " + plotHint;
+  };
+  const inspect = (event) => {
+    const pos = coordinate(event); if (!inPlot(pos)) return false;
+    let nearest = null, best = Infinity;
+    const { sx, sy } = state.layout;
+    state.visibleSegments.forEach((segment) => {
+      const dx = segment.q.x - segment.p.x, dy = segment.q.y - segment.p.y;
+      const t = Math.max(0, Math.min(1, ((pos.x - segment.p.x) * dx + (pos.y - segment.p.y) * dy) / (dx * dx + dy * dy || 1)));
+      const px = segment.p.x + t * dx, py = segment.p.y + t * dy;
+      const distance = Math.hypot(px - pos.x, py - pos.y);
+      if (distance >= best) return;
+      const d = state.domain, l = state.layout;
+      const x = d.xMin + (px - l.left) / l.plotWidth * (d.xMax - d.xMin);
+      const y = d.yMax - (py - l.top) / l.plotHeight * (d.yMax - d.yMin);
+      const fullDx = segment.b.x - segment.a.x, fullDy = segment.b.y - segment.a.y;
+      const ratio = Math.abs(fullDx) > Math.abs(fullDy) ? (x - segment.a.x) / (fullDx || 1) : (y - segment.a.y) / (fullDy || 1);
+      const point = { x, y };
+      for (const field of ["omega", "gain"]) if (Number.isFinite(segment.a[field]) && Number.isFinite(segment.b[field])) point[field] = segment.a[field] + ratio * (segment.b[field] - segment.a[field]);
+      nearest = { ...point, name: segment.name, approximate: true }; best = distance;
+    });
+    (state.options.points || []).forEach((point) => {
+      const distance = Math.hypot(sx(point.x) - pos.x, sy(point.y) - pos.y);
+      if (distance < 12 && distance <= best + 3) { best = distance; nearest = { ...point, name: point.name || "特征点" }; }
+    });
+    if (!nearest) return false;
+    readout.textContent = state.options.readout ? state.options.readout(nearest) : (nearest.name + " · x ≈ " + plotNumber(nearest.x) + " · y ≈ " + plotNumber(nearest.y));
+    svg.querySelector(".chart-crosshair")?.remove();
+    const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    group.setAttribute("class", "chart-crosshair"); group.setAttribute("pointer-events", "none");
+    const x = sx(nearest.x), y = sy(nearest.y), l = state.layout;
+    group.innerHTML = '<line class="crosshair-x" x1="' + x + '" x2="' + x + '" y1="' + l.top + '" y2="' + (l.top + l.plotHeight) + '"/><line class="crosshair-y" x1="' + l.left + '" x2="' + (l.left + l.plotWidth) + '" y1="' + y + '" y2="' + y + '"/><circle class="crosshair-point" cx="' + x + '" cy="' + y + '" r="4"/>';
+    svg.appendChild(group); return true;
+  };
+  svg.addEventListener("wheel", (event) => {
+    const pos = coordinate(event); if (!inPlot(pos)) return;
+    event.preventDefault();
+    const d = state.domain, l = state.layout, factor = event.deltaY < 0 ? 0.8 : 1.25;
+    const fx = (pos.x - l.left) / l.plotWidth, fy = (pos.y - l.top) / l.plotHeight;
+    const dx = (d.xMax - d.xMin) * factor, dy = (d.yMax - d.yMin) * factor;
+    if (dx < 1e-9 || dy < 1e-9 || dx > 1e12 || dy > 1e12) return;
+    const cx = d.xMin + fx * (d.xMax - d.xMin), cy = d.yMax - fy * (d.yMax - d.yMin);
+    const next = { xMin: cx - fx * dx, xMax: cx + (1 - fx) * dx, yMin: cy - (1 - fy) * dy, yMax: cy + fy * dy };
+    if (state.options.logX && (next.xMin < -12 || next.xMax > 12)) return;
+    redraw(next);
+  }, { passive: false });
+  svg.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const pos = coordinate(event); if (!inPlot(pos)) return;
+    state.drag = { pos, domain: { ...state.domain }, moved: false }; svg.setPointerCapture(event.pointerId);
+  });
+  svg.addEventListener("pointermove", (event) => {
+    if (!state.drag) { if (!state.pinned) inspect(event); return; }
+    const pos = coordinate(event), drag = state.drag, d = drag.domain, l = state.layout;
+    if (Math.hypot(pos.x - drag.pos.x, pos.y - drag.pos.y) < 4 && !drag.moved) return;
+    drag.moved = true;
+    const dx = (pos.x - drag.pos.x) / l.plotWidth * (d.xMax - d.xMin), dy = (pos.y - drag.pos.y) / l.plotHeight * (d.yMax - d.yMin);
+    const next = { xMin: d.xMin - dx, xMax: d.xMax - dx, yMin: d.yMin + dy, yMax: d.yMax + dy };
+    if (!state.options.logX || (next.xMin >= -12 && next.xMax <= 12)) redraw(next);
+  });
+  svg.addEventListener("pointerup", (event) => {
+    state.justDragged = state.drag?.moved; state.drag = null;
+    if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+  });
+  svg.addEventListener("pointercancel", () => { state.drag = null; state.justDragged = true; });
+  svg.addEventListener("click", (event) => {
+    if (state.justDragged) { state.justDragged = false; return; }
+    if (state.pinned) { state.pinned = false; svg.querySelector(".chart-crosshair")?.remove(); readout.textContent = plotHint; }
+    else state.pinned = inspect(event);
+  });
+  svg.addEventListener("dblclick", (event) => { event.preventDefault(); redraw(null); });
 }
+
 
 const EXAMPLES = {
   second: { numerator: "25", denominator: "1, 6, 25", duration: 8 },
   first: { numerator: "2", denominator: "1, 2", duration: 5 },
   integrator: { numerator: "1", denominator: "1, 2, 0", duration: 12 },
+  notebook: { numerator: "5000", denominator: "1, 5, 25, 125, 0", duration: 8 },
 };
 
 function initApp() {
@@ -847,10 +1050,10 @@ function initApp() {
     });
     renderMetrics(metrics, result.overflow, stable);
     setParameterCards([
-      { label: "上升时间", value: metrics.riseTime === null ? null : metrics.riseTime.toFixed(3), unit: "s" },
-      { label: "峰值时间", value: metrics.peakTime === null ? null : metrics.peakTime.toFixed(3), unit: "s" },
-      { label: "超调量", value: metrics.overshoot === null ? null : metrics.overshoot.toFixed(2), unit: "%", accent: true },
-      { label: "调节时间", value: metrics.settlingTime === null ? null : metrics.settlingTime.toFixed(3), unit: "s" },
+      { label: "上升时间", value: !Number.isFinite(metrics.riseTime) ? null : metrics.riseTime.toFixed(3), unit: "s" },
+      { label: "峰值时间", value: !Number.isFinite(metrics.peakTime) ? null : metrics.peakTime.toFixed(3), unit: "s" },
+      { label: "超调量", value: !Number.isFinite(metrics.overshoot) ? null : metrics.overshoot.toFixed(2), unit: "%", accent: true },
+      { label: "调节时间", value: !Number.isFinite(metrics.settlingTime) ? null : metrics.settlingTime.toFixed(3), unit: "s" },
       { label: "稳态值", value: Number.isFinite(finalValue) ? finalValue.toFixed(4) : null, unit: "" },
       { label: "极点稳定性", value: stable ? "稳定" : "不稳定", unit: "" },
     ], "时域响应指标");
@@ -886,197 +1089,234 @@ function initApp() {
     ], "输入 / 输出指标");
   }
 
+  function fixedAxis(prefix) {
+    const min = Number($("#" + prefix + "-min").value), max = Number($("#" + prefix + "-max").value), step = Number($("#" + prefix + "-step").value);
+    if (["min", "max", "step"].some((s) => !$("#" + prefix + "-" + s).value.trim())) throw new Error("请填写完整的坐标最小值、最大值和每格步长。");
+    axisTicks(min, max, step);
+    return { min, max, step };
+  }
+
+  function syncPlotControls() {
+    const frequency = currentView === "frequency", bode = frequency && ui.frequencyMode.value === "bode";
+    const nyquist = currentView === "stability" || (frequency && !bode);
+    $("#bode-scale-settings").hidden = !bode;
+    $("#nyquist-scale-settings").hidden = !nyquist;
+    $("#complex-plot-help").hidden = !(nyquist || currentView === "root");
+    $("#frequency-custom").hidden = ui.frequencyRange.value !== "custom";
+    ["magnitude", "phase", "nyquist"].forEach((name) => {
+      $("#" + name + "-scale-fields").hidden = $("#" + name + "-scale-mode").value !== "fixed";
+    });
+    ui.bodeAnalysis.hidden = !frequency; ui.rootAnalysis.hidden = currentView !== "root";
+    $("#parameter-details").hidden = !(frequency || currentView === "root");
+  }
+
+  function clearPlotViews() {
+    activeCharts.forEach((container) => { const state = lineChartState.get(container); if (state) { state.view = null; state.key = null; } });
+    $("#cursor-readout").textContent = plotHint;
+  }
+
+  function plotNyquist(container, model, gain, data) {
+    const negative = $("#nyquist-negative").checked, detours = $("#nyquist-detours").checked;
+    const series = data.positiveBranches.map((branch) => ({ ...branch, className: "nyquist-positive", arrows: true }));
+    if (negative) series.push(...data.negativeBranches.map((branch) => ({ ...branch, className: "nyquist-negative", arrows: true })));
+    if (detours) data.detours.forEach((arc) => {
+      series.push({ ...arc, className: "nyquist-detour", arrows: true, inspectable: false });
+      if (negative) series.push({ name: arc.name, data: arc.data.slice().reverse().map((p) => ({ x: p.x, y: -p.y })), className: "nyquist-detour", arrows: true, inspectable: false });
+    });
+    const { x: xAuto, y: yAuto } = nyquistAutoBounds(data, negative);
+    const fixed = $("#nyquist-scale-mode").value === "fixed";
+    const x = fixed ? fixedAxis("nyquist-x") : xAuto, y = fixed ? fixedAxis("nyquist-y") : yAuto;
+    const rays = ui.asymptoteToggle.checked ? data.asymptotes.slice() : [];
+    if (negative) rays.push(...rays.map((r) => ({ origin: { x: r.origin.x, y: -r.origin.y }, direction: { x: r.direction.x, y: -r.direction.y } })));
+    const points = [{ x: -1, y: 0, name: "临界点 (−1, 0)", className: "critical-point", radius: 5 }];
+    if (data.dc && finitePoint(data.dc)) points.push({ ...data.dc, name: "直流点 ω=0", className: "dc-point" });
+    makeSvgLineChart(container, series, {
+      name: "Nyquist", xMin: x.min, xMax: x.max, yMin: y.min, yMax: y.max, xStep: x.step, yStep: y.step,
+      xLabel: "Re[L(jω)]", yLabel: "Im[L(jω)]", equalScale: true, expandAutoAxes: !fixed, radialThreshold: FAR_RADIUS, points, rays,
+      viewKey: JSON.stringify([model, gain, fixed, x, y, negative]),
+      readout: (point) => point.name + " · Re ≈ " + plotNumber(point.x) + " · Im ≈ " + plotNumber(point.y) + " · |L| ≈ " + plotNumber(Math.hypot(point.x, point.y)) +
+        (Number.isFinite(point.omega) ? " · ω ≈ " + plotNumber(point.omega) + " rad/s · f ≈ " + plotNumber(point.omega / (2 * Math.PI)) + " Hz" : ""),
+    });
+  }
+
+  function nyquistLimitText(data) {
+    return data.limits.map((limit) => "ω→" + plotNumber(limit.omega) + (limit.side === -1 ? "⁻" : "⁺") + "：" +
+      (limit.text || "|L|→∞，方向 " + limit.angle.toFixed(2) + "°")).concat(["ω→∞：L→0"]).join("；");
+  }
+
   function drawFrequency(model) {
     const decade = Number(ui.frequencyRange.value);
-    const minW = Math.pow(10, -decade); const maxW = Math.pow(10, decade);
-    const data = Array.from({ length: 320 }, (_, i) => {
-      const omega = minW * Math.pow(maxW / minW, i / 319);
-      const value = frequencyResponse(model.numerator, model.denominator, omega);
-      return { omega, magnitude: 20 * Math.log10(Math.max(absComplex(value), 1e-12)), phase: Math.atan2(value.im, value.re) * 180 / Math.PI, re: value.re, im: value.im };
-    });
-    let previousPhase = data[0].phase;
-    data.forEach((point) => { while (point.phase - previousPhase > 180) point.phase -= 360; while (point.phase - previousPhase < -180) point.phase += 360; previousPhase = point.phase; });
-    const nyquist = ui.frequencyMode.value === "nyquist";
-    $("#frequency-title").textContent = nyquist ? "Nyquist 图" : "Bode 图";
-    $("#frequency-kicker").textContent = nyquist ? "NYQUIST PLOT" : "FREQUENCY RESPONSE";
-    ui.bodeChart.hidden = nyquist;
-    ui.phaseChart.hidden = nyquist;
-    ui.nyquistChart.hidden = !nyquist;
-    const roots = modelCharacteristics(model);
+    const minW = ui.frequencyRange.value === "custom" ? Number($("#frequency-min").value) : Math.pow(10, -decade);
+    const maxW = ui.frequencyRange.value === "custom" ? Number($("#frequency-max").value) : Math.pow(10, decade);
+    if (!(minW >= 1e-12 && maxW <= 1e12 && maxW > minW)) throw new Error("频率范围应满足 10⁻¹² ≤ ω 最小值 < ω 最大值 ≤ 10¹² rad/s。");
+    const data = frequencySamples(model, minW, maxW), finite = data.filter((p) => Number.isFinite(p.magnitude) && Number.isFinite(p.phase));
+    if (!finite.length) throw new Error("此频率范围内没有有限频率响应。");
+    const roots = modelCharacteristicsCached(model);
     const gainCrossovers = estimateCrossovers(data, "magnitude", 0);
-    const phaseMarginPoint = gainCrossovers
-      .map((omega) => ({ omega, margin: 180 + interpolateFrequencyField(data, omega, "phase") }))
-      .reduce((best, item) => !best || item.margin < best.margin ? item : best, null);
-    const gainCrossover = phaseMarginPoint ? phaseMarginPoint.omega : null;
-    const phaseCrossover = estimateCrossover(data, "phase", -180);
-    const phaseMinForMargins = Math.min(...data.map((point) => point.phase));
-    const phaseMaxForMargins = Math.max(...data.map((point) => point.phase));
-    const firstOddPhaseIndex = Math.ceil((phaseMinForMargins - 180) / 360);
-    const lastOddPhaseIndex = Math.floor((phaseMaxForMargins - 180) / 360);
-    const phaseTargets = Array.from({ length: Math.max(0, lastOddPhaseIndex - firstOddPhaseIndex + 1) }, (_, index) => 180 + 360 * (firstOddPhaseIndex + index));
-    const gainMarginPoint = phaseTargets.flatMap((target) => estimateCrossovers(data, "phase", target).map((omega) => ({
-      omega, phase: target, margin: -interpolateFrequencyField(data, omega, "magnitude"),
-    }))).reduce((best, item) => !best || item.margin < best.margin ? item : best, null);
-    const phaseMargin = phaseMarginPoint ? phaseMarginPoint.margin : null;
-    const gainMargin = gainMarginPoint ? gainMarginPoint.margin : Infinity;
-    setParameterCards([
-      { label: "增益 K", value: Number(roots.gain.toPrecision(5)), unit: "" },
-      { label: "型别", value: roots.type, unit: "型" },
-      { label: "相对阶", value: roots.relativeOrder, unit: "阶" },
-      { label: "相位裕度", value: phaseMargin === null ? null : phaseMargin.toFixed(2), unit: "°", accent: true },
-      { label: "幅值裕度", value: gainMargin === Infinity ? "∞" : gainMargin.toFixed(2), unit: "dB", accent: true },
-      { label: "0 dB 频率", value: gainCrossover === null ? null : gainCrossover.toFixed(3), unit: "rad/s" },
-    ], "频域特性指标");
-    if (nyquist) {
-      const all = data.flatMap((point) => [point.re, point.im]);
-      const range = Math.max(1, ...all.map(Math.abs));
-      makeSvgLineChart(ui.nyquistChart, [{ data: data.map((p) => ({ x: p.re, y: p.im })), className: "nyquist-line" }], {
-        xMin: -range * 1.1, xMax: range * 1.1, yMin: -range * 1.1, yMax: range * 1.1, xTicks: 4, yTicks: 4,
-        xLabel: "实部 Re[G(jω)]", yLabel: "虚部 Im[G(jω)]", formatX: (v) => Number(v.toPrecision(2)).toString(), formatY: (v) => Number(v.toPrecision(2)).toString(), padding: false,
-      });
-      $("#frequency-note").textContent = `绘制正频率支路，ω 从 ${minW} 到 ${maxW} rad/s；负频率支路关于实轴对称。`;
-      ui.bodeAnalysis.innerHTML = "<div class=\"analysis-row\"><span>增益</span><strong>" + Number(roots.gain.toPrecision(5)) + "</strong><span>型别</span><strong>" + roots.type + "</strong><span>相对阶</span><strong>" + roots.relativeOrder + "</strong><span>相位裕度</span><strong>" + (phaseMargin === null ? '—' : phaseMargin.toFixed(2) + '°') + "</strong><span>幅值裕度</span><strong>" + (gainMargin === Infinity ? '∞ dB' : gainMargin.toFixed(2) + ' dB') + "</strong></div>";
-    } else {
-      const xValues = data.map((point) => Math.log10(point.omega));
-      const minX = xValues[0]; const maxX = xValues[xValues.length - 1];
-      const superscriptDigits = { "-": "⁻", "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴", "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹" };
-      const formatter = (value) => "10" + String(Math.round(value)).split("").map((digit) => superscriptDigits[digit] || digit).join("");
-      const decimated = data.filter((_, i) => i % 2 === 0);
-      const magnitudeMin = Math.min(...data.map((point) => point.magnitude));
-      const magnitudeMax = Math.max(...data.map((point) => point.magnitude));
-      const cornerFrequencies = dedupeNumbers(roots.corners.map((item) => item.omega)).filter((omega) => omega >= minW && omega <= maxW);
-      const verticals = ui.asymptoteToggle.checked ? cornerFrequencies.map((omega) => ({ x: Math.log10(omega), label: "ω=" + Number(omega.toPrecision(3)) })) : [];
-      const asymptotic = data.map((point) => ({ x: Math.log10(point.omega), y: asymptoticMagnitudeDb(model, roots, point.omega) }));
-      const crossover = estimateCrossover(data, "magnitude", 0);
-      makeSvgLineChart(ui.bodeChart, [{ name: "幅频曲线", data: decimated.map((p) => ({ x: Math.log10(p.omega), y: p.magnitude, omega: p.omega })) }, ...(ui.asymptoteToggle.checked ? [{ name: "渐近线", data: asymptotic, className: "asymptote-line" }] : [])], {
-        xMin: minX, xMax: maxX, xTicks: decade * 2, yTicks: 4, xLabel: "角频率 ω (rad/s)", yLabel: "幅值 |G| (dB)",
-        yMin: magnitudeMin, yMax: magnitudeMax, formatX: formatter, verticals, points: crossover ? [{ x: Math.log10(crossover), y: 0, label: "ωc=" + Number(crossover.toPrecision(3)) }] : [], formatReadoutX: (value) => "ω=" + Math.pow(10, value).toPrecision(5) + " rad/s · f=" + (Math.pow(10, value) / (2 * Math.PI)).toPrecision(5) + " Hz", formatReadoutY: (value) => value.toFixed(3) + " dB",
-      });
-      const phaseMin = Math.min(...data.map((point) => point.phase)); const phaseMax = Math.max(...data.map((point) => point.phase));
-      const phaseCross = phaseCrossover;
-      makeSvgLineChart(ui.phaseChart, [{ name: "相频曲线", data: decimated.map((p) => ({ x: Math.log10(p.omega), y: p.phase, omega: p.omega })) }], {
-        xMin: minX, xMax: maxX, xTicks: decade * 2, yTicks: 4, xLabel: "角频率 ω (rad/s)", yLabel: "相角 ∠G (°)",
-        yMin: phaseMin, yMax: phaseMax, formatX: formatter, formatY: (v) => `${Math.round(v)}°`, verticals, points: phaseCross ? [{ x: Math.log10(phaseCross), y: -180, label: "ωπ=" + Number(phaseCross.toPrecision(3)) }] : [], formatReadoutX: (value) => "ω=" + Math.pow(10, value).toPrecision(5) + " rad/s · f=" + (Math.pow(10, value) / (2 * Math.PI)).toPrecision(5) + " Hz", formatReadoutY: (value) => value.toFixed(2) + "°",
-      });
-      const slopeBreaks = [minW, ...cornerFrequencies.filter((omega) => omega > minW && omega < maxW), maxW];
-      const slopes = slopeBreaks.slice(0, -1).map((start, index) => {
-        const end = slopeBreaks[index + 1];
-        const sample = Math.sqrt(start * end);
-        return Number(start.toPrecision(3)) + "–" + Number(end.toPrecision(3)) + " rad/s：" + asymptoticSlopeDbDecade(roots, sample) + " dB/dec";
-      });
-      ui.bodeAnalysis.innerHTML = '<div class="analysis-row"><span>增益</span><strong>' + Number(roots.gain.toPrecision(5)) + '</strong><span>型别</span><strong>' + roots.type + '</strong><span>相对阶</span><strong>' + roots.relativeOrder + '</strong><span>相位裕度</span><strong>' + (phaseMargin === null ? '—' : phaseMargin.toFixed(2) + '°') + '</strong><span>幅值裕度</span><strong>' + (gainMargin === Infinity ? '∞ dB' : gainMargin.toFixed(2) + ' dB') + '</strong></div><div class="analysis-grid"><span>转折频率</span><b>' + (roots.corners.length ? roots.corners.map((item) => item.kind + ' ' + Number(item.omega.toPrecision(4))).join(' · ') : '无') + '</b><span>0 dB 截止频率</span><b>' + (gainCrossover ? gainCrossover.toPrecision(5) + ' rad/s' : '当前范围内无') + '</b><span>相位裕度频率</span><b>' + (phaseMarginPoint ? phaseMarginPoint.omega.toPrecision(5) + ' rad/s' : '当前范围内无') + '</b><span>−180° 频率</span><b>' + (phaseCross ? phaseCross.toPrecision(5) + ' rad/s' : '当前范围内无') + '</b><span>幅值裕度频率</span><b>' + (gainMarginPoint ? gainMarginPoint.omega.toPrecision(5) + ' rad/s（相位 ' + gainMarginPoint.phase + '°）' : '当前范围内无') + '</b><span>斜率</span><b>' + (slopes.length ? slopes.join('；') : asymptoticSlopeDbDecade(roots, minW) + ' dB/dec') + '</b></div>';
-      $("#frequency-note").textContent = `频率范围 ${minW} – ${maxW} rad/s · 相位按频率连续展开。`;
-      ui.bodeQueryResult.textContent = evaluateQuery(data, ui.bodeQueryMode.value, Number(ui.bodeQueryValue.value));
+    const marginCandidates = gainCrossovers.map((omega) => {
+      const phase = interpolateFrequencyField(data, omega, "phase");
+      return { omega, phase, margin: ((phase + 180 + 540) % 360 + 360) % 360 - 180 };
+    });
+    const phasePoint = marginCandidates.reduce((best, p) => !best || Math.abs(p.margin) < Math.abs(best.margin) ? p : best, null);
+    const pMin = Math.min(...finite.map((p) => p.phase)), pMax = Math.max(...finite.map((p) => p.phase));
+    const gainCandidates = [];
+    for (let phase = 180 + 360 * Math.ceil((pMin - 180) / 360); phase <= pMax; phase += 360) {
+      estimateCrossovers(data, "phase", phase).forEach((omega) => gainCandidates.push({ omega, phase, margin: -interpolateFrequencyField(data, omega, "magnitude") }));
     }
+    const gainPoint = gainCandidates.reduce((best, p) => !best || Math.abs(p.margin) < Math.abs(best.margin) ? p : best, null);
+    const phaseMarginText = phasePoint ? phasePoint.margin.toFixed(2) + "°" : "范围内未检出";
+    const gainMarginText = gainPoint ? gainPoint.margin.toFixed(2) + " dB" : "范围内未检出";
+    setParameterCards([
+      { label: "模型首项系数比", value: plotNumber(roots.gain) }, { label: "型别", value: roots.type, unit: "型" },
+      { label: "相对阶", value: roots.relativeOrder, unit: "阶" },
+      { label: "相位裕度", value: phaseMarginText, accent: true }, { label: "幅值裕度", value: gainMarginText, accent: true },
+      { label: "0 dB 交点", value: gainCrossovers.length, unit: "个" },
+    ], "频域特性 · 数值与坐标读数");
+    const nyquist = ui.frequencyMode.value === "nyquist";
+    $("#frequency-title").textContent = nyquist ? "Nyquist 坐标图 · L(s)=G(s)" : "Bode 图";
+    $("#frequency-kicker").textContent = nyquist ? "NYQUIST PLOT" : "FREQUENCY RESPONSE";
+    ui.bodeChart.hidden = nyquist; ui.phaseChart.hidden = nyquist; ui.nyquistChart.hidden = !nyquist;
+    const corners = dedupeNumbers(roots.corners.map((p) => p.omega));
+    const intervalEdges = [minW, ...corners.filter((w) => w > minW && w < maxW), maxW];
+    const slopes = intervalEdges.slice(0, -1).map((start, i) => plotNumber(start) + "～" + plotNumber(intervalEdges[i + 1]) + " rad/s：" + asymptoticSlopeDbDecade(roots, Math.sqrt(start * intervalEdges[i + 1])) + " dB/dec");
+    const query = Number(ui.bodeQueryValue.value);
+    ui.bodeQueryResult.textContent = Number.isFinite(query) ? evaluateQuery(data, ui.bodeQueryMode.value, query) : "请输入有效数值。";
+    const rows = [
+      ["转折频率 ω", corners.length ? corners.map(plotNumber).join("、") + " rad/s" : "无"],
+      ["全部 0 dB 交点", gainCrossovers.length ? gainCrossovers.map(plotNumber).join("、") + " rad/s" : "当前扫描范围内无"],
+      ["相位裕度 / ωc", phasePoint ? phaseMarginText + " / " + plotNumber(phasePoint.omega) + " rad/s" : "当前扫描范围内无"],
+      ["幅值裕度 / ωπ", gainPoint ? gainMarginText + " / " + plotNumber(gainPoint.omega) + " rad/s" : "未检出不等于全频段无穷大"],
+      ["各段渐近斜率", slopes.join("；")],
+      ["参数查询", ui.bodeQueryResult.textContent],
+      ["扫描范围", plotNumber(minW) + "～" + plotNumber(maxW) + " rad/s；缩放只改变视图，裕度按此扫描范围计算"],
+    ];
+    if (nyquist) {
+      const nyquist = nyquistData(model, 1);
+      plotNyquist(ui.nyquistChart, model, 1, nyquist);
+      rows.push(["极限方向", nyquistLimitText(nyquist)], ["绘图说明", "L=G，K=1；红点 (−1,0)。模值超过 10000 的曲线为虚线；灰虚线为渐近线，紫虚线为真实绕行映射。"]);
+      $("#frequency-note").textContent = "精确坐标、实虚轴等比例。绿色为正频率，蓝色为负频率；箭头按 ω 增大。无穷远绕行映射可能在当前视野之外。";
+    } else {
+      const sharedReadout = (point) => {
+        const omega = Math.pow(10, point.x), value = frequencyResponse(model.numerator, model.denominator, omega);
+        const phase = frequencySamples(model, omega * (1 - 1e-6), omega * (1 + 1e-6), 3)[1]?.phase;
+        return point.name + " · ω = " + plotNumber(omega) + " rad/s · f = " + plotNumber(omega / (2 * Math.PI)) + " Hz · 实际幅值 = " + (20 * Math.log10(absComplex(value))).toFixed(3) + " dB · 相位 = " + Number(phase).toFixed(2) + "°" + (point.name === "幅值渐近线" ? " · 渐近值 ≈ " + point.y.toFixed(3) + " dB" : "");
+      };
+      for (const [field, prefix, chart, label, reference] of [
+        ["magnitude", "magnitude", ui.bodeChart, "幅值 |G| (dB)", 0],
+        ["phase", "phase", ui.phaseChart, "相角 ∠G (°)", -180],
+      ]) {
+        const fixed = $("#" + prefix + "-scale-mode").value === "fixed";
+        const visibleValues = finite.map((p) => p[field]);
+        const bounds = fixed ? fixedAxis(prefix) : niceBounds(Math.min(...visibleValues), Math.max(...visibleValues), reference);
+        const sample = (domain) => {
+          const points = frequencySamples(model, Math.pow(10, domain.xMin), Math.pow(10, domain.xMax));
+          const series = [{ name: field === "magnitude" ? "幅频曲线" : "相频曲线", data: points.map((p) => ({ x: Math.log10(p.omega), y: p[field], omega: p.omega })) }];
+          if (field === "magnitude" && ui.asymptoteToggle.checked) series.push({ name: "幅值渐近线", data: points.map((p) => ({ x: Math.log10(p.omega), y: asymptoticMagnitudeDb(model, roots, p.omega) })), className: "asymptote-line" });
+          return series;
+        };
+        makeSvgLineChart(chart, [], {
+          name: field === "magnitude" ? "Bode 幅频" : "Bode 相频",
+          xMin: Math.log10(minW), xMax: Math.log10(maxW), yMin: bounds.min, yMax: bounds.max, yStep: bounds.step,
+          xLabel: "角频率 ω (rad/s)", yLabel: label, logX: true, linkGroup: "bode", sample, readout: sharedReadout,
+          horizontals: ui.asymptoteToggle.checked ? [reference] : [],
+          viewKey: JSON.stringify([model, minW, maxW, bounds, fixed]),
+        });
+      }
+      $("#frequency-note").textContent = "幅频、相频横轴联动；Auto 自适应，固定刻度按设置绘制。滚轮缩放后重新采样，双击恢复设置。所有分析数值均在参数区。";
+    }
+    ui.bodeAnalysis.innerHTML = '<div class="analysis-grid">' + rows.map(([label, value]) => "<span>" + label + "</span><b>" + value + "</b>").join("") + "</div>";
   }
 
   function drawRoot(model) {
     const maxGain = Number(ui.gainMax.value);
-    if (!Number.isFinite(maxGain) || maxGain <= 0 || maxGain > 10000) throw new Error("增益上限需在 0 到 10000 之间。");
-    const den = model.denominator; const num = model.numerator;
-    const n = den.length; const paddedNum = new Array(n).fill(0);
-    for (let i = 0; i < num.length; i += 1) paddedNum[n - num.length + i] = num[i];
-    const gains = [0, ...Array.from({ length: 47 }, (_, i) => maxGain * Math.pow(0.001, 1 - (i + 1) / 48))];
-    gains[gains.length - 1] = maxGain;
-    const tracks = Array.from({ length: n - 1 }, () => []);
-    let previous = null;
-    for (const gain of gains) {
-      const coeffs = den.map((coefficient, i) => coefficient + gain * paddedNum[i]);
-      const roots = polynomialRoots(coeffs);
-      if (!previous) {
-        roots.forEach((root, i) => { tracks[i].push(root); });
-      } else {
-        const remaining = new Set(roots.map((_, index) => index));
-        previous.forEach((root, i) => {
-          let nearest = null; let nearestDistance = Infinity;
-          for (const candidateIndex of remaining) {
-            const candidate = roots[candidateIndex];
-            const distance = Math.hypot(root.re - candidate.re, root.im - candidate.im);
-            if (distance < nearestDistance) { nearestDistance = distance; nearest = candidateIndex; }
-          }
-          if (nearest !== null) { tracks[i].push(roots[nearest]); remaining.delete(nearest); }
-        });
-      }
-      previous = roots;
-    }
-    const zeros = polynomialRoots(num);
-    const poles = polynomialRoots(den);
-    const rootInfo = modelCharacteristics(model);
-    const asymptoteCount = Math.max(0, poles.length - zeros.length);
-    const centroid = asymptoteCount ? poles.reduce((sum, point) => sum + point.re, 0) / asymptoteCount - zeros.reduce((sum, point) => sum + point.re, 0) / asymptoteCount : null;
-    const angles = asymptoteCount ? Array.from({ length: asymptoteCount }, (_, index) => (2 * index + 1) * 180 / asymptoteCount) : [];
-    const asymptoteLines = centroid === null ? [] : angles.map((angle) => {
-      const radians = angle * Math.PI / 180; const reach = Math.max(10, maxGain * 0.15, ...poles.map(absComplex), ...zeros.map(absComplex));
-      return { start: { re: centroid, im: 0 }, end: { re: centroid + reach * Math.cos(radians), im: reach * Math.sin(radians) } };
+    if (!Number.isFinite(maxGain) || maxGain <= 0 || maxGain > 1e30) throw new Error("K 上限需大于 0 且不超过 10³⁰；它与模值 10000 的显示阈值不同。");
+    const data = rootLocusData(model, maxGain), { info, tracks, centroid, angles, breakpoints } = data;
+    const points = [...info.poles.map((p) => ({ x: p.re, y: p.im, symbol: "cross", name: "开环极点", gain: 0 })),
+      ...info.zeros.map((p) => ({ x: p.re, y: p.im, symbol: "zero", name: "开环零点" }))];
+    const finite = tracks.flat().filter((p) => finitePoint(p) && Math.hypot(p.x, p.y) <= FAR_RADIUS);
+    const xs = finite.concat(points).map((p) => p.x), ys = finite.concat(points).map((p) => p.y);
+    const x = niceBounds(Math.min(0, ...xs), Math.max(0, ...xs)), y = niceBounds(Math.min(-1, ...ys), Math.max(1, ...ys));
+    const rays = ui.asymptoteToggle.checked && centroid !== null ? angles.map((angle) => ({ origin: { x: centroid, y: 0 }, direction: { x: Math.cos(angle * Math.PI / 180), y: Math.sin(angle * Math.PI / 180) } })) : [];
+    makeSvgLineChart(ui.rootChart, tracks.map((track, i) => ({ name: "根轨迹分支 " + (i + 1), data: track, className: "root-track", arrows: true })), {
+      name: "根轨迹", xMin: x.min, xMax: x.max, yMin: y.min, yMax: y.max, xStep: x.step, yStep: y.step,
+      xLabel: "实轴 Re(s)", yLabel: "虚轴 Im(s)", equalScale: true, expandAutoAxes: true, radialThreshold: FAR_RADIUS, rays, points,
+      viewKey: JSON.stringify([model, maxGain]),
+      readout: (p) => p.name + " · s ≈ " + formatComplex({ re: p.x, im: p.y }, 5) + " · |s| ≈ " + plotNumber(Math.hypot(p.x, p.y)) + (Number.isFinite(p.gain) ? " · K ≈ " + plotNumber(p.gain) : ""),
     });
-    drawComplexChart(ui.rootChart, tracks, zeros, poles, { lines: ui.asymptoteToggle.checked ? asymptoteLines : [] });
-    const breakaway = findBreakawayPoints(model, rootInfo);
     const imaginary = findImaginaryCrossings(model);
     const equation = formatPolynomial(model.denominator) + " + K(" + formatPolynomial(model.numerator) + ") = 0";
-    ui.rootAnalysis.innerHTML = '<div class="analysis-grid"><span>传递函数</span><b>G(s) = (' + formatPolynomial(model.numerator) + ')/(' + formatPolynomial(model.denominator) + ')</b><span>特征方程</span><b>' + equation + '</b><span>零点</span><b>' + (zeros.length ? zeros.map((point) => formatComplex(point)).join('，') : '无有限零点') + '</b><span>极点</span><b>' + (poles.length ? poles.map((point) => formatComplex(point)).join('，') : '无有限极点') + '</b><span>阶数差</span><b>' + asymptoteCount + '</b><span>渐近线交点</span><b>' + (centroid === null ? '无' : 's = ' + centroid.toFixed(4)) + '</b><span>渐近线角度</span><b>' + (angles.length ? angles.map((angle) => angle.toFixed(1) + '°').join('，') : '无') + '</b><span>分离 / 汇合点</span><b>' + (breakaway.length ? breakaway.map((point) => 's = ' + point.toFixed(4)).join('，') : '当前范围内未找到') + '</b><span>穿越 jω</span><b>' + (imaginary.length ? imaginary.map((item) => 'K=' + item.gain.toPrecision(4) + '，ω=' + item.omega.toPrecision(4)).join('；') : '当前范围内未找到') + '</b></div>';
+    const angleText = (list) => list.length ? list.map((p) => formatComplex(p.point) + "：" + (p.repeated ? "重根，需按多分支角条件判断" : p.angle.toFixed(2) + "°")).join("；") : "无复数点";
+    const intervalText = (x) => x === Infinity ? "+∞" : x === -Infinity ? "−∞" : plotNumber(x);
+    const rows = [
+      ["传递函数", "G(s)=(" + formatPolynomial(model.numerator) + ")/(" + formatPolynomial(model.denominator) + ")"], ["特征方程", equation],
+      ["规则 1 · 分支数量", info.poles.length + " 条；K≥0"], ["规则 2 · 起点与终点", "起点 ×：" + info.poles.map((p) => formatComplex(p)).join("、") + "；终点 ○：" + (info.zeros.map((p) => formatComplex(p)).join("、") || "无有限零点") + "；" + angles.length + " 条趋于无穷远"],
+      ["规则 3 · 对称性", "实系数系统，关于实轴共轭对称"], ["规则 4 · 实轴区段", data.intervals.map((r) => "(" + intervalText(r.a) + ", " + intervalText(r.b) + ")").join("；") || "无"],
+      ["规则 5 · 渐近线", centroid === null ? "无" : "交点 s=" + plotNumber(centroid) + "；角度 " + angles.map((a) => a.toFixed(2) + "°").join("、")],
+      ["规则 6 · 分离/汇合", breakpoints.map((s) => "s=" + plotNumber(s) + "，K=" + plotNumber(-evalPolynomial(model.denominator, { re: s, im: 0 }).re / evalPolynomial(model.numerator, { re: s, im: 0 }).re)).join("；") || "未找到满足 K>0 的实轴点"],
+      ["规则 7 · 出射/入射", "出射：" + angleText(data.departure) + "；入射：" + angleText(data.arrival)],
+      ["规则 8 · 穿越 jω", imaginary.map((p) => "K=" + plotNumber(p.gain) + "，ω=" + plotNumber(p.omega) + " rad/s").join("；") || "数值搜索范围内未找到"],
+      ["远端显示", "|s|>10000 的实际轨迹为红色虚线；灰色虚线仅表示理论渐近方向。计算范围为 0≤K≤" + plotNumber(maxGain)],
+    ];
+    ui.rootAnalysis.innerHTML = '<div class="analysis-grid">' + rows.map(([label, value]) => "<span>" + label + "</span><b>" + value + "</b>").join("") + "</div>";
     setParameterCards([
-      { label: "阶数差", value: asymptoteCount, unit: "阶" },
-      { label: "渐近线交点", value: centroid === null ? null : centroid.toFixed(3), unit: "" },
-      { label: "渐近线数量", value: angles.length, unit: "条" },
-      { label: "分离 / 汇合点", value: breakaway.length, unit: "个", accent: true },
-      { label: "jω 穿越点", value: imaginary.length, unit: "个", accent: true },
-      { label: "K 上限", value: maxGain, unit: "" },
-    ], "根轨迹关键量");
-    const unstableAtEnd = previous?.some((pole) => pole.re > 0) ?? false;
-    $("#root-note").textContent = unstableAtEnd ? `K = ${maxGain} 时至少一个闭环极点位于右半平面；请结合完整根轨迹观察稳定性变化。` : `K 从 0 增至 ${maxGain}；实轴右侧代表闭环不稳定极点所在区域。`;
+      { label: "阶数差 n−m", value: angles.length }, { label: "渐近线交点", value: centroid === null ? "无" : plotNumber(centroid) },
+      { label: "分支数", value: info.poles.length }, { label: "分离/汇合点", value: breakpoints.length },
+      { label: "远端模值阈值", value: FAR_RADIUS }, { label: "K 计算上限", value: plotNumber(maxGain) },
+    ], "根轨迹 · 参数与八条绘图规则");
+    $("#root-note").textContent = "箭头表示 K 增大方向；× 为极点，○ 为零点。虚线按到原点的距离判断，不按 K 判断。详细规则在上方参数区展开。";
   }
 
   function drawStability(model) {
     const gain = Number(ui.stabilityGain.value);
-    if (!Number.isFinite(gain) || gain <= 0 || gain > 10000) throw new Error("反馈增益 K 需在 0 到 10000 之间。");
-    const polynomial = closedLoopPolynomial(model, gain);
-    const table = routhTable(polynomial);
-    const roots = polynomialRoots(polynomial);
-    const imaginaryClosedPole = roots.some((root) => Math.abs(root.re) < 1e-7);
-    const stable = table.signChanges === 0 && !imaginaryClosedPole;
-    const status = table.signChanges > 0 ? "不稳定" : (imaginaryClosedPole ? "临界稳定" : "稳定");
-    const statusClass = stable ? "" : " fail";
-    $("#stability-gain-label").textContent = Number(gain.toPrecision(5));
-    $("#stability-summary").innerHTML = '<div class="stability-status' + statusClass + '"><span class="status-dot-large"></span>劳斯判据：' + status + ' <span class="text-muted">（第一列变号 ' + table.signChanges + ' 次）</span></div>';
-    const columns = Math.ceil((table.order + 1) / 2);
+    if (!Number.isFinite(gain) || gain <= 0 || gain > 10000) throw new Error("反馈增益 K 需大于 0 且不超过 10000。");
+    const polynomial = closedLoopPolynomial(model, gain), table = routhTable(polynomial), roots = polynomialRoots(polynomial);
+    const axis = roots.filter((p) => Math.abs(p.re) < 1e-7);
+    const repeated = axis.some((p, i) => axis.some((q, j) => i !== j && absComplex(subComplex(p, q)) < 1e-5));
+    const unstable = table.signChanges > 0 || roots.some((p) => p.re > 1e-6) || repeated;
+    const status = unstable ? "不稳定" : axis.length ? "临界稳定（非渐近稳定）" : "稳定";
+    $("#stability-gain-label").textContent = plotNumber(gain);
+    $("#stability-summary").innerHTML = '<div class="stability-status' + (unstable || axis.length ? " fail" : "") + '"><span class="status-dot-large"></span>劳斯判据：' + status + "（首列变号 " + table.signChanges + ' 次）</div><p class="scale-help">特征方程：' + formatPolynomial(polynomial) + "=0</p>";
     let html = '<table><thead><tr><th>s 次方</th>';
-    for (let column = 0; column < columns; column += 1) html += '<th>列 ' + (column + 1) + '</th>';
-    html += '</tr></thead><tbody>';
-    table.table.forEach((row, index) => {
-      html += '<tr><td>s<sup>' + (table.order - index) + '</sup></td>';
-      row.forEach((value) => { const className = value < -1e-8 ? 'negative' : Math.abs(value) < 1e-8 ? 'zero' : ''; html += '<td class="' + className + '">' + (Number.isFinite(value) ? Number(value.toPrecision(5)) : '—') + '</td>'; });
-      html += '</tr>';
+    for (let c = 0; c < table.table[0].length; c += 1) html += "<th>列 " + (c + 1) + "</th>";
+    html += "</tr></thead><tbody>";
+    table.table.forEach((row, i) => {
+      html += "<tr><td>s<sup>" + (table.order - i) + "</sup></td>";
+      row.forEach((v) => { html += '<td class="' + (v < 0 ? "negative" : v === 0 ? "zero" : "") + '">' + plotNumber(v) + "</td>"; });
+      html += "</tr>";
     });
-    html += '</tbody></table>';
+    html += "</tbody></table>";
+    if (table.specialRows.length) html += '<p class="scale-help">整行零：已用上一行辅助多项式的导数替换。</p>';
+    if (table.epsilonRows.length) html += '<p class="scale-help">首项为零：计算以 ε=10⁻⁹ 近似 ε→0⁺；表中的极大数来自此替换，稳定性另用闭环根校验。</p>';
     $("#routh-table").innerHTML = html;
-    const data = nyquistData(model, 1, 500);
-    const critical = -1 / gain;
-    const all = [...data.negative, ...(data.dc ? [data.dc] : []), ...data.positive];
-    const range = Math.max(1.5, ...all.flatMap((point) => [Math.abs(point.x), Math.abs(point.y), Math.abs(critical)])) * 1.12;
-    makeSvgLineChart(ui.stabilityNyquistChart, [{ name: "负频率支路", data: data.negative.map((point) => ({ x: point.x, y: point.y })) }, { name: "正频率支路", data: data.positive.map((point) => ({ x: point.x, y: point.y })) }, ...(data.dc ? [{ name: "直流点", data: [{ x: data.dc.x, y: data.dc.y }] }] : [])], {
-      xMin: -range, xMax: range, yMin: -range, yMax: range, xTicks: 4, yTicks: 4, xLabel: "Re[G(jω)]", yLabel: "Im[G(jω)]", padding: false,
-      points: [{ x: critical, y: 0, label: "−1/K" }], formatReadoutX: (value) => Number(value.toPrecision(5)).toString(), formatReadoutY: (value) => Number(value.toPrecision(5)).toString(),
-    });
-    const winding = nyquistWinding(data, critical);
-    const openLoopPoles = modelCharacteristics(model).poles;
-    const pCount = openLoopPoles.filter((pole) => pole.re > 1e-7).length;
-    const zCount = data.imaginaryAxisPole || imaginaryClosedPole ? null : pCount - winding;
-    const nyquistStable = zCount === null ? null : zCount === 0;
-    const nyquistStatus = data.imaginaryAxisPole ? "需绕行" : (imaginaryClosedPole ? "临界稳定" : (nyquistStable ? "稳定" : "不稳定"));
-    $("#nyquist-summary").innerHTML = '<span>临界点</span><b>(' + critical.toPrecision(5) + ', 0)</b><span>开环右半平面极点 P</span><b>' + pCount + '</b><span>有向环绕数 N</span><b>' + (data.imaginaryAxisPole ? '需绕开虚轴极点' : (imaginaryClosedPole ? '经过临界点' : winding)) + '</b><span>闭环右半平面零点 Z</span><b>' + (zCount === null ? (imaginaryClosedPole ? '临界点位于曲线上' : '需作绕行计算') : zCount) + '</b><span>Nyquist 判据</span><b>' + nyquistStatus + '</b><span>闭环极点</span><b>' + roots.map((root) => formatComplex(root)).join('，') + '</b>';
-    $("#stability-note").textContent = data.imaginaryAxisPole ? "开环含虚轴极点，严格 Nyquist 判据需对该极点作小半圆绕行；本工具在此情形下以劳斯表和闭环极点给出结论，环绕数仅供观察。" : (imaginaryClosedPole ? "闭环极点位于虚轴，Nyquist 曲线经过临界点 −1/K，属于临界稳定，不能按普通环绕数直接计数。" : "Nyquist 曲线按正、负频率闭合；此处绘制 G(jω)，并以 −1/K 为单位负反馈临界点。");
+    const data = nyquistData(model, gain), winding = nyquistWinding(data);
+    const P = modelCharacteristicsCached(model).poles.filter((p) => p.re > 1e-7).length;
+    const calculatedZ = winding === null ? null : P - winding;
+    const reliable = !axis.length && calculatedZ !== null && calculatedZ === table.signChanges;
+    const nyquistStatus = axis.length ? "经过临界点，单独判断虚轴根" : reliable ? (calculatedZ === 0 ? "稳定" : "不稳定") : "计数需复核";
+    plotNyquist(ui.stabilityNyquistChart, model, gain, data);
+    const rows = [
+      ["环路传递函数", "L(s)=" + plotNumber(gain) + "·G(s)"], ["临界点", "(−1, 0)"],
+      ["开环右半平面极点 P", P], ["逆时针环绕数 N", reliable ? winding : "不报告未经校验的计数"],
+      ["闭环右半平面根 Z", reliable ? calculatedZ + "（Z=P−N）" : "见劳斯表与闭环极点"],
+      ["Nyquist 判据", nyquistStatus], ["闭环极点", roots.map((p) => formatComplex(p)).join("；")],
+      ["极限方向", nyquistLimitText(data)],
+    ];
+    $("#nyquist-summary").innerHTML = rows.map(([label, value]) => "<span>" + label + "</span><b>" + value + "</b>").join("");
+    $("#stability-note").textContent = "绿色：正频率；蓝色：负频率；红点：(−1,0)；灰虚线：渐近线；紫虚线：绕行映射。完整围线按 ω 从 −∞ 到 +∞，逆时针 N 为正，Z=P−N。" +
+      (data.imaginaryAxisPole ? "虚轴极点从右侧小半圆绕开；映射按精确坐标绘制，可能在视野外。" : "") +
+      "模值 >10000 使用虚线，Auto 不包含全部远端。";
     setParameterCards([
-      { label: "劳斯判据", value: status, unit: "", accent: !stable },
-      { label: "第一列变号", value: table.signChanges, unit: "次" },
-      { label: "Nyquist 判据", value: nyquistStatus, unit: "", accent: nyquistStable === false || imaginaryClosedPole },
-      { label: "Nyquist 环绕数", value: data.imaginaryAxisPole || imaginaryClosedPole ? null : winding, unit: "次" },
-      { label: "反馈增益 K", value: Number(gain.toPrecision(5)), unit: "" },
-      { label: "闭环极点", value: roots.length, unit: "个" },
-    ], "稳定性判据");
+      { label: "劳斯判据", value: status, accent: unstable || axis.length > 0 }, { label: "首列变号", value: table.signChanges, unit: "次" },
+      { label: "Nyquist 判据", value: nyquistStatus }, { label: "逆时针环绕数", value: reliable ? winding : null },
+      { label: "环路增益 K", value: gain }, { label: "远端模值阈值", value: FAR_RADIUS },
+    ], "稳定性 · 精确 Nyquist 坐标图");
   }
+
 
   function calculate() {
     ui.error.hidden = true;
+    $("#cursor-readout").textContent = plotHint;
+    syncPlotControls();
     try {
       const system = readSystem();
       lastModel = system;
@@ -1151,6 +1391,13 @@ function initApp() {
     calculate();
   });
   [ui.frequencyMode, ui.frequencyRange, ui.gainMax, ui.stabilityGain, ui.asymptoteToggle].forEach((input) => input.addEventListener("change", calculate));
+  ["magnitude-scale-mode", "phase-scale-mode", "nyquist-scale-mode", "magnitude-min", "magnitude-max", "magnitude-step", "phase-min", "phase-max", "phase-step", "nyquist-x-min", "nyquist-x-max", "nyquist-x-step", "nyquist-y-min", "nyquist-y-max", "nyquist-y-step", "nyquist-negative", "nyquist-detours", "frequency-min", "frequency-max"].forEach((id) => {
+    $("#" + id).addEventListener("change", () => { clearPlotViews(); calculate(); });
+  });
+  document.querySelectorAll("[data-auto]").forEach((button) => button.addEventListener("click", () => {
+    $("#" + button.dataset.auto + "-scale-mode").value = "auto"; clearPlotViews(); calculate();
+  }));
+  $("#root-auto").addEventListener("click", () => { clearPlotViews(); calculate(); });
   [ui.numerator, ui.denominator, ui.formulaInput, ui.responseTime, ui.inputSignal, ui.outputResponse, ui.duration].forEach((input) => input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) calculate(); }));
   ui.bodeQueryMode.addEventListener("change", () => {
     const phaseMode = ui.bodeQueryMode.value === "phase-at-frequency";
@@ -1160,12 +1407,19 @@ function initApp() {
   });
   ui.bodeQueryValue.addEventListener("input", () => { if (lastModel && lastModel.mode === "model" && currentView === "frequency") calculate(); });
   if (typeof ResizeObserver !== "undefined") {
-    resizeObserver = new ResizeObserver(() => { if (lastModel) calculate(); });
+    let resizeFrame;
+    resizeObserver = new ResizeObserver(() => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => activeCharts.forEach((chart) => {
+        const state = lineChartState.get(chart);
+        if (chart.getClientRects().length && state?.baseOptions) makeSvgLineChart(chart, state.baseSeries, { ...state.baseOptions, interaction: true });
+      }));
+    });
     [ui.stepChart, ui.bodeChart, ui.phaseChart, ui.nyquistChart, ui.rootChart, ui.stabilityNyquistChart].forEach((chart) => resizeObserver.observe(chart));
   } else window.addEventListener("resize", () => { if (lastModel) calculate(); });
   calculate();
 }
 
-const ControlLabMath = { parsePolynomial, parseTransferFunction, parseNumberList, polynomialRoots, validateModel, simulateStep, calculateMetrics, frequencyResponse, formatPolynomial, modelCharacteristics, findBreakawayPoints, findImaginaryCrossings, estimateCrossover, estimateCrossovers, interpolateFrequencyField, routhTable, closedLoopPolynomial, nyquistData, nyquistWinding };
+const ControlLabMath = { parsePolynomial, parseTransferFunction, parseNumberList, polynomialRoots, validateModel, simulateStep, calculateMetrics, frequencyResponse, formatPolynomial, modelCharacteristics, findBreakawayPoints, findImaginaryCrossings, estimateCrossover, estimateCrossovers, interpolateFrequencyField, evaluateQuery, routhTable, closedLoopPolynomial, nyquistData, nyquistAutoBounds, nyquistWinding, frequencySamples, rootLocusData, axisTicks, niceStep, niceBounds, radiusSegments, clipSegment, FAR_RADIUS };
 if (typeof module !== "undefined" && module.exports) module.exports = ControlLabMath;
 if (typeof document !== "undefined") initApp();
